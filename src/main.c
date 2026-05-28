@@ -645,12 +645,13 @@ static void handle_rpc(const char *category, int argc, char **argv)
      * Find it by locating the last \n and parsing from there. */
     json_object *resp = NULL;
     const char *last_newline = strrchr(buf, '\n');
-    if (last_newline && last_newline > buf && *(last_newline - 1) == '}') {
-        /* Last chunk before final \n — the response */
+    if (last_newline && last_newline > buf && *(last_newline + 1)) {
+        /* Try the chunk after the last \n — this is always the response
+         * (the State.Dump notification is before it). */
         resp = json_tokener_parse(last_newline + 1);
     }
     if (!resp) {
-        /* Fallback: parse the entire buffer (single-message response) */
+        /* Fallback: parse the entire buffer */
         resp = json_tokener_parse(buf);
     }
     if (!resp) {
