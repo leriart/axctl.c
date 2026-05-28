@@ -14,6 +14,8 @@
 #include <unistd.h>
 #include <errno.h>
 #include <pthread.h>
+#include <stdarg.h>
+#include <time.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <json-c/json.h>
@@ -29,6 +31,31 @@
 #include "utils/log.h"
 #include "utils/strutil.h"
 #include "utils/json_helpers.h"
+
+/* ------------------------------------------------------------------ */
+/* Debug logging to /tmp/axctl_debug.log                               */
+/* ------------------------------------------------------------------ */
+
+static FILE *g_debug_log = NULL;
+
+static void debug_log(const char *fmt, ...) {
+    if (!g_debug_log) {
+        g_debug_log = fopen("/tmp/axctl_debug.log", "a");
+        if (!g_debug_log) return;
+        setvbuf(g_debug_log, NULL, _IOLBF, 0); /* line-buffered */
+    }
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    struct tm tm;
+    localtime_r(&ts.tv_sec, &tm);
+    fprintf(g_debug_log, "[%02d:%02d:%02d.%03ld] ",
+            tm.tm_hour, tm.tm_min, tm.tm_sec, ts.tv_nsec / 1000000);
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(g_debug_log, fmt, ap);
+    va_end(ap);
+    fprintf(g_debug_log, "\n");
+}
 
 /* ------------------------------------------------------------------ */
 /* Server context                                                      */
@@ -87,6 +114,7 @@ static json_object *build_state_dump(axctl_server_t *s)
         json_object_array_add(w_arr, wj);
     }
     json_object_object_add(dump, "windows", w_arr);
+    debug_log("BUILD_STATE_DUMP: windows=%zu", windows.count);
     axctl_window_array_free(&windows);
 
     /* Workspaces */
@@ -98,6 +126,7 @@ static json_object *build_state_dump(axctl_server_t *s)
         json_object_array_add(ws_arr, wsj);
     }
     json_object_object_add(dump, "workspaces", ws_arr);
+    debug_log("BUILD_STATE_DUMP: workspaces=%zu", workspaces.count);
     axctl_workspace_array_free(&workspaces);
 
     /* Monitors */
@@ -107,8 +136,19 @@ static json_object *build_state_dump(axctl_server_t *s)
     for (size_t i = 0; i < monitors.count; i++) {
         json_object *mj = axctl_monitor_to_json(&monitors.items[i]);
         json_object_array_add(m_arr, mj);
+        /* Log each monitor's active_workspace for multi-monitor debugging */
+        const char *aw = "";
+        if (monitors.items[i].metadata) {
+            json_object *jaw = NULL;
+            if (json_object_object_get_ex(monitors.items[i].metadata, "active_workspace", &jaw))
+                aw = json_object_get_string(jaw);
+        }
+        debug_log("  STATE_MON[%zu]: id=%s name=%s active_ws=%s",
+                  i, monitors.items[i].id ? monitors.items[i].id : "(null)",
+                  monitors.items[i].name ? monitors.items[i].name : "(null)", aw);
     }
     json_object_object_add(dump, "monitors", m_arr);
+    debug_log("BUILD_STATE_DUMP: monitors=%zu", monitors.count);
     axctl_monitor_array_free(&monitors);
 
     return dump;
@@ -151,30 +191,68 @@ axctl_server_t *axctl_server_create(axctl_compositor_t *comp, const char *path)
 
 static void server_init_cache(axctl_server_t *s)
 {
+    debug_log("INIT_CACHE: refreshing all cache data");
+
     axctl_window_array_t windows;
     if (s->compositor->list_windows(s->compositor->priv, &windows) == 0) {
+        debug_log("INIT_CACHE: got %zu windows", windows.count);
+        for (size_t i = 0; i < windows.count; i++) {
+            debug_log("  WIN[%zu]: id=%s app=%s ws=%s focused=%d floating=%d",
+                      i, windows.items[i].id ? windows.items[i].id : "(null)",
+                      windows.items[i].app_id ? windows.items[i].app_id : "(null)",
+                      windows.items[i].workspace_id ? windows.items[i].workspace_id : "(null)",
+                      windows.items[i].is_focused, windows.items[i].is_floating);
+        }
         axctl_cache_set_windows(s->cache, &windows);
         axctl_window_array_free(&windows);
+    } else {
+        debug_log("INIT_CACHE: list_windows FAILED");
     }
 
     /* Mark active window */
     char *active_id = NULL;
     if (s->compositor->active_window(s->compositor->priv, &active_id) == 0 &&
         active_id && *active_id) {
+        debug_log("INIT_CACHE: active_window=%s", active_id);
         axctl_cache_mark_window_focused(s->cache, active_id);
     }
     free(active_id);
 
     axctl_workspace_array_t workspaces;
     if (s->compositor->list_workspaces(s->compositor->priv, &workspaces) == 0) {
+        debug_log("INIT_CACHE: got %zu workspaces", workspaces.count);
+        for (size_t i = 0; i < workspaces.count; i++) {
+            debug_log("  WS[%zu]: id=%s name=%s mon=%s active=%d",
+                      i, workspaces.items[i].id ? workspaces.items[i].id : "(null)",
+                      workspaces.items[i].name ? workspaces.items[i].name : "(null)",
+                      workspaces.items[i].monitor_id ? workspaces.items[i].monitor_id : "(null)",
+                      workspaces.items[i].is_active);
+        }
         axctl_cache_set_workspaces(s->cache, &workspaces);
         axctl_workspace_array_free(&workspaces);
+    } else {
+        debug_log("INIT_CACHE: list_workspaces FAILED");
     }
 
     axctl_monitor_array_t monitors;
     if (s->compositor->list_monitors(s->compositor->priv, &monitors) == 0) {
+        debug_log("INIT_CACHE: got %zu monitors", monitors.count);
+        for (size_t i = 0; i < monitors.count; i++) {
+            const char *aw = "";
+            if (monitors.items[i].metadata) {
+                json_object *jaw = NULL;
+                if (json_object_object_get_ex(monitors.items[i].metadata, "active_workspace", &jaw))
+                    aw = json_object_get_string(jaw);
+            }
+            debug_log("  MON[%zu]: id=%s name=%s focused=%d active_ws=%s",
+                      i, monitors.items[i].id ? monitors.items[i].id : "(null)",
+                      monitors.items[i].name ? monitors.items[i].name : "(null)",
+                      monitors.items[i].is_focused, aw);
+        }
         axctl_cache_set_monitors(s->cache, &monitors);
         axctl_monitor_array_free(&monitors);
+    } else {
+        debug_log("INIT_CACHE: list_monitors FAILED");
     }
 }
 
@@ -186,6 +264,10 @@ static void server_init_cache(axctl_server_t *s)
 static void event_callback(const axctl_event_t *event, void *userdata)
 {
     axctl_server_t *s = (axctl_server_t *)userdata;
+
+    debug_log("EVENT: type=%d (%s) payload=%s",
+              event->type, axctl_event_type_str(event->type),
+              event->payload ? json_object_to_json_string_ext(event->payload, JSON_C_TO_STRING_PLAIN) : "(null)");
 
     switch (event->type) {
     case EVENT_WINDOW_CREATED:
@@ -245,11 +327,23 @@ static void event_callback(const axctl_event_t *event, void *userdata)
         break;
     }
 
-    case EVENT_WORKSPACE_CHANGED:
+    case EVENT_WORKSPACE_CHANGED: {
         server_init_cache(s);
-        broadcast_event(s, "Event.WorkspaceChanged",
-                        event->payload ? json_object_get(event->payload) : NULL);
+        /* Go normalises params to {"Name": name} when name is available */
+        json_object *ws_params = NULL;
+        if (event->payload) {
+            json_object *jname = NULL;
+            if (json_object_object_get_ex(event->payload, "name", &jname)) {
+                ws_params = json_object_new_object();
+                json_object_object_add(ws_params, "Name",
+                    json_object_new_string(json_object_get_string(jname)));
+            } else {
+                ws_params = json_object_get(event->payload);
+            }
+        }
+        broadcast_event(s, "Event.WorkspaceChanged", ws_params);
         break;
+    }
 
     case EVENT_WINDOW_MOVED: {
         const char *id = NULL, *ws = NULL, *mon = NULL;
@@ -265,8 +359,18 @@ static void event_callback(const axctl_event_t *event, void *userdata)
         }
         if (id && ws)
             axctl_cache_update_window_workspace(s->cache, id, ws, mon);
-        broadcast_event(s, "Event.WindowMoved",
-                        event->payload ? json_object_get(event->payload) : NULL);
+        /* Go normalises params to {"ID": id, "WorkspaceID": ws} */
+        json_object *mv_params = NULL;
+        if (id && ws) {
+            mv_params = json_object_new_object();
+            json_object_object_add(mv_params, "ID",
+                json_object_new_string(id));
+            json_object_object_add(mv_params, "WorkspaceID",
+                json_object_new_string(ws));
+        } else if (event->payload) {
+            mv_params = json_object_get(event->payload);
+        }
+        broadcast_event(s, "Event.WindowMoved", mv_params);
         break;
     }
 
@@ -346,7 +450,12 @@ static void broadcast_event(axctl_server_t *s, const char *method,
                             json_object *params)
 {
     pthread_mutex_lock(&s->clients_mu);
+    debug_log("BROADCAST: method=%s clients=%d params=%s",
+              method, s->client_count,
+              params ? json_object_to_json_string_ext(params, JSON_C_TO_STRING_PLAIN) : "(null)");
+
     if (s->client_count == 0) {
+        debug_log("BROADCAST: no subscribers, skipping");
         pthread_mutex_unlock(&s->clients_mu);
         if (params) json_object_put(params);
         return;
@@ -359,13 +468,20 @@ static void broadcast_event(axctl_server_t *s, const char *method,
         json_object_object_add(notif, "params", params);
     json_object_object_add(notif, "state", build_state_dump(s));
 
-    const char *data = json_object_to_json_string(notif);
+    /* Use compact format matching Go's json.Marshal (no extra spaces) */
+    const char *data = json_object_to_json_string_ext(notif,
+                                                       JSON_C_TO_STRING_PLAIN);
     size_t dlen = strlen(data);
+    debug_log("BROADCAST: sending %zu bytes to %d client(s)", dlen, s->client_count);
 
     for (int i = 0; i < s->client_count; i++) {
         /* Non-blocking write; drop if client is slow */
-        write(s->client_fds[i], data, dlen);
-        write(s->client_fds[i], "\n", 1);
+        ssize_t w1 = write(s->client_fds[i], data, dlen);
+        ssize_t w2 = write(s->client_fds[i], "\n", 1);
+        if (w1 < 0 || w2 < 0) {
+            debug_log("BROADCAST: write error to client fd=%d: %s",
+                      s->client_fds[i], strerror(errno));
+        }
     }
 
     json_object_put(notif);
@@ -848,10 +964,15 @@ static json_object *dispatch_method(axctl_server_t *s, const char *method,
         }
     }
     else if (strcmp(method, "System.Subscribe") == 0) {
+        debug_log("SUBSCRIBE: new subscriber fd=%d", client_fd);
+
         /* Add this client to the subscription list */
         pthread_mutex_lock(&s->clients_mu);
         if (s->client_count < MAX_CLIENTS) {
             s->client_fds[s->client_count++] = client_fd;
+            debug_log("SUBSCRIBE: added client, total=%d", s->client_count);
+        } else {
+            debug_log("SUBSCRIBE: MAX_CLIENTS reached, rejecting fd=%d", client_fd);
         }
         pthread_mutex_unlock(&s->clients_mu);
 
@@ -859,9 +980,22 @@ static json_object *dispatch_method(axctl_server_t *s, const char *method,
         json_object *notif = json_object_new_object();
         json_object_object_add(notif, "jsonrpc", json_object_new_string("2.0"));
         json_object_object_add(notif, "method", json_object_new_string("State.Dump"));
-        json_object_object_add(notif, "state", build_state_dump(s));
-        const char *data = json_object_to_json_string(notif);
-        write(client_fd, data, strlen(data));
+        json_object *initial_state = build_state_dump(s);
+        json_object_object_add(notif, "state", initial_state);
+        const char *data = json_object_to_json_string_ext(notif,
+                                                           JSON_C_TO_STRING_PLAIN);
+        size_t dlen = strlen(data);
+        debug_log("SUBSCRIBE: initial state dump %zu bytes", dlen);
+        /* Log first 500 chars of the dump for inspection */
+        if (dlen > 500) {
+            char preview[501];
+            memcpy(preview, data, 500);
+            preview[500] = '\0';
+            debug_log("SUBSCRIBE: dump preview: %.500s...", preview);
+        } else {
+            debug_log("SUBSCRIBE: dump: %s", data);
+        }
+        write(client_fd, data, dlen);
         write(client_fd, "\n", 1);
         json_object_put(notif);
 
@@ -927,7 +1061,8 @@ static void handle_connection(axctl_server_t *s, int fd)
                     json_object_new_string("ok"));
             }
 
-            const char *resp_str = json_object_to_json_string(resp);
+            const char *resp_str = json_object_to_json_string_ext(resp,
+                                                JSON_C_TO_STRING_PLAIN);
             write(fd, resp_str, strlen(resp_str));
             write(fd, "\n", 1);
 

@@ -362,7 +362,7 @@ static void run_subscribe(void)
                     if (msg) {
                         json_object *jrpc = NULL;
                         if (json_object_object_get_ex(msg, "jsonrpc", &jrpc)) {
-                            printf("%s\n", json_object_to_json_string(msg));
+                            printf("%s\n", json_object_to_json_string_ext(msg, JSON_C_TO_STRING_PLAIN));
                             fflush(stdout);
                         }
                         json_object_put(msg);

@@ -241,6 +241,22 @@ static int niri_list_windows(void *priv, axctl_window_array_t *out) {
     }
     if (ws_resp) json_object_put(ws_resp);
 
+    /* Build output name->index map (for numerical monitor_id) */
+    struct json_object *out_resp = NULL;
+    niri_request_str(d, "Outputs", &out_resp);
+    struct { char *name; int idx; } out_map[16];
+    int out_count = 0;
+    if (out_resp && json_object_get_type(out_resp) == json_type_array) {
+        int len = json_object_array_length(out_resp);
+        for (int i = 0; i < len && out_count < 16; i++) {
+            struct json_object *o = json_object_array_get_idx(out_resp, i);
+            out_map[out_count].name = axctl_strdup(json_get_string(o, "name"));
+            out_map[out_count].idx = i;
+            out_count++;
+        }
+    }
+    if (out_resp) json_object_put(out_resp);
+
     struct json_object *resp = NULL;
     int rc = niri_request_str(d, "Windows", &resp);
     if (rc != AXCTL_OK) return rc;
@@ -267,21 +283,41 @@ static int niri_list_windows(void *priv, axctl_window_array_t *out) {
             win.is_floating = json_get_bool(w, "is_floating", false);
             win.is_fullscreen = json_get_bool(w, "is_fullscreen", false);
 
-            /* Find monitor from workspace map */
-            win.metadata = json_object_new_object();
+            /* Find monitor name from workspace map, then convert to index */
+            const char *output_name = "";
             for (int j = 0; j < ws_map_count; j++) {
                 if (ws_map[j].ws_id == wid) {
-                    json_object_object_add(win.metadata, "monitor_id",
-                        json_object_new_string(ws_map[j].output));
+                    output_name = ws_map[j].output;
                     break;
                 }
             }
+            int mon_idx = 0;
+            for (int j = 0; j < out_count; j++) {
+                if (out_map[j].name && strcmp(out_map[j].name, output_name) == 0) {
+                    mon_idx = out_map[j].idx;
+                    break;
+                }
+            }
+
+            win.metadata = json_object_new_object();
+            json_object_object_add(win.metadata, "monitor_id",
+                json_object_new_string(axctl_sprintf("%d", mon_idx)));
+            /* Niri doesn't expose window geometry via IPC, use defaults */
+            json_object_object_add(win.metadata, "x",
+                json_object_new_int(0));
+            json_object_object_add(win.metadata, "y",
+                json_object_new_int(0));
+            json_object_object_add(win.metadata, "width",
+                json_object_new_int(100));
+            json_object_object_add(win.metadata, "height",
+                json_object_new_int(100));
 
             axctl_window_array_push(out, win);
         }
     }
     if (resp) json_object_put(resp);
     for (int i = 0; i < ws_map_count; i++) free(ws_map[i].output);
+    for (int i = 0; i < out_count; i++) free(out_map[i].name);
     return AXCTL_OK;
 }
 
@@ -504,6 +540,27 @@ static int niri_list_monitors(void *priv, axctl_monitor_array_t *out) {
     niri_data_t *d = (niri_data_t *)priv;
     axctl_monitor_array_init(out);
 
+    /* Fetch workspaces to map active workspace IDs to outputs */
+    struct json_object *ws_resp = NULL;
+    niri_request_str(d, "Workspaces", &ws_resp);
+    /* Build output->active_workspace_name map */
+    char out_ws_name[256][64];
+    int out_ws_count = 0;
+    if (ws_resp && json_object_get_type(ws_resp) == json_type_array) {
+        int len = json_object_array_length(ws_resp);
+        for (int i = 0; i < len && out_ws_count < 256; i++) {
+            struct json_object *w = json_object_array_get_idx(ws_resp, i);
+            const char *output = json_get_string(w, "output");
+            const char *name = json_get_string(w, "name");
+            if (output && name && json_get_bool(w, "is_active", false)) {
+                snprintf(out_ws_name[out_ws_count], sizeof(out_ws_name[0]),
+                         "%s=%s", output, name);
+                out_ws_count++;
+            }
+        }
+    }
+    if (ws_resp) json_object_put(ws_resp);
+
     struct json_object *resp = NULL;
     int rc = niri_request_str(d, "Outputs", &resp);
     if (rc != AXCTL_OK) return rc;
@@ -513,8 +570,9 @@ static int niri_list_monitors(void *priv, axctl_monitor_array_t *out) {
         for (int i = 0; i < len; i++) {
             struct json_object *m = json_object_array_get_idx(resp, i);
             axctl_monitor_t mon = {0};
-            mon.name = axctl_strdup(json_get_string(m, "name"));
-            mon.id = axctl_strdup(mon.name);
+            const char *mon_name = json_get_string(m, "name");
+            mon.name = axctl_strdup(mon_name);
+            mon.id = axctl_strdup(mon_name);
             mon.description = axctl_strdup(json_get_string(m, "make"));
 
             struct json_object *mode = json_get_object(m, "current_mode");
@@ -525,6 +583,30 @@ static int niri_list_monitors(void *priv, axctl_monitor_array_t *out) {
             }
             mon.scale = json_get_double(m, "scale", 1.0);
             mon.is_focused = json_get_bool(m, "is_focused", false);
+
+            /* Metadata with active_workspace, x, y, transform */
+            mon.metadata = json_object_new_object();
+            json_object_object_add(mon.metadata, "x",
+                json_object_new_int(json_get_int(m, "x", 0)));
+            json_object_object_add(mon.metadata, "y",
+                json_object_new_int(json_get_int(m, "y", 0)));
+            json_object_object_add(mon.metadata, "transform",
+                json_object_new_int(json_get_int(m, "transform", 0)));
+            /* Find active workspace for this output */
+            const char *active_ws = "";
+            if (mon_name) {
+                for (int j = 0; j < out_ws_count; j++) {
+                    char expected[64];
+                    snprintf(expected, sizeof(expected), "%s=", mon_name);
+                    if (strncmp(out_ws_name[j], expected, strlen(expected)) == 0) {
+                        active_ws = out_ws_name[j] + strlen(expected);
+                        break;
+                    }
+                }
+            }
+            json_object_object_add(mon.metadata, "active_workspace",
+                json_object_new_string(active_ws));
+
             axctl_monitor_array_push(out, mon);
         }
     }

@@ -751,9 +751,17 @@ static int mango_list_monitors(void *priv, axctl_monitor_array_t *out)
         m.description = axctl_strdup("");
         m.is_focused = os_st->active;
         m.scale = os_st->scale;
+        m.width = os_st->width;
+        m.height = os_st->height;
         m.metadata = json_object_new_object();
         json_object_object_add(m.metadata, "active_workspace",
             json_object_new_string(ws_name ? ws_name : ""));
+        json_object_object_add(m.metadata, "x",
+            json_object_new_int(os_st->x));
+        json_object_object_add(m.metadata, "y",
+            json_object_new_int(os_st->y));
+        json_object_object_add(m.metadata, "transform",
+            json_object_new_int(0));
         free(ws_name);
 
         axctl_monitor_array_push(out, m);

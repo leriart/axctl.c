@@ -147,6 +147,20 @@ void axctl_event_free(axctl_event_t *e) {
     memset(e, 0, sizeof(*e));
 }
 
+/* ── Helpers ─────────────────────────────────────────────────────────── */
+
+/*
+ * Go's json.Marshal outputs whole-number floats as integers (60.0 → "60").
+ * json-c always outputs "60.0".  This helper matches Go's behaviour:
+ * if the value is a whole number, emit a JSON integer; otherwise a double.
+ */
+static struct json_object *json_smart_double(double v) {
+    if (v == (double)(int64_t)v) {
+        return json_object_new_int64((int64_t)v);
+    }
+    return json_object_new_double(v);
+}
+
 /* ── JSON serialisation ─────────────────────────────────────────────── */
 struct json_object *axctl_window_to_json(const axctl_window_t *w) {
     struct json_object *obj = json_object_new_object();
@@ -204,12 +218,16 @@ struct json_object *axctl_monitor_to_json(const axctl_monitor_t *m) {
     struct json_object *obj = json_object_new_object();
     json_object_object_add(obj, "id", json_object_new_string(m->id ? m->id : ""));
     json_object_object_add(obj, "name", json_object_new_string(m->name ? m->name : ""));
-    if (m->description)
+    /* Go: omitempty — omit description when "" or nil */
+    if (m->description && m->description[0] != '\0')
         json_object_object_add(obj, "description", json_object_new_string(m->description));
     json_object_object_add(obj, "width", json_object_new_int(m->width));
     json_object_object_add(obj, "height", json_object_new_int(m->height));
-    json_object_object_add(obj, "refresh_rate", json_object_new_double(m->refresh_rate));
-    json_object_object_add(obj, "scale", json_object_new_double(m->scale));
+    /* Go: omitempty — omit when 0; use smart double to match Go int formatting */
+    if (m->refresh_rate != 0.0)
+        json_object_object_add(obj, "refresh_rate", json_smart_double(m->refresh_rate));
+    if (m->scale != 0.0)
+        json_object_object_add(obj, "scale", json_smart_double(m->scale));
     json_object_object_add(obj, "is_focused", json_object_new_boolean(m->is_focused));
 
     /* Always include metadata — QML clients expect it even if empty */
