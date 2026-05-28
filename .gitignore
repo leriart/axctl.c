@@ -1,0 +1,14 @@
+# Build artifacts
+axctl
+build/
+
+# IDE / editor
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
