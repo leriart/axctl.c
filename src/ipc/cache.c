@@ -81,7 +81,11 @@ static axctl_monitor_array_t dup_monitors(const axctl_monitor_array_t *src) {
 /* ── Window operations ──────────────────────────────────────────────── */
 void axctl_cache_add_window(axctl_state_cache_t *c, axctl_window_t w) {
     pthread_rwlock_wrlock(&c->lock);
-    axctl_window_array_push(&c->windows, w);
+    /* Deep copy: the caller owns the original window and may free it.
+     * axctl_window_array_push does a shallow copy of the struct, so we
+     * must dup the contents before the original is destroyed. */
+    axctl_window_t copy = axctl_window_dup(&w);
+    axctl_window_array_push(&c->windows, copy);
     pthread_rwlock_unlock(&c->lock);
 }
 
