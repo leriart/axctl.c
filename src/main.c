@@ -639,21 +639,8 @@ static void handle_rpc(const char *category, int argc, char **argv)
     }
     buf[n] = 0;
 
-    /* The daemon sends a State.Dump notification on every new connection
-     * before the actual response. The last \n-delimited JSON object in
-     * the buffer is always the actual response (it has our request ID).
-     * Find it by locating the last \n and parsing from there. */
-    json_object *resp = NULL;
-    const char *last_newline = strrchr(buf, '\n');
-    if (last_newline && last_newline > buf && *(last_newline + 1)) {
-        /* Try the chunk after the last \n — this is always the response
-         * (the State.Dump notification is before it). */
-        resp = json_tokener_parse(last_newline + 1);
-    }
-    if (!resp) {
-        /* Fallback: parse the entire buffer */
-        resp = json_tokener_parse(buf);
-    }
+    /* Parse response — single JSON object per request */
+    json_object *resp = json_tokener_parse(buf);
     if (!resp) {
         fprintf(stderr, "Invalid response from daemon\n");
         return;

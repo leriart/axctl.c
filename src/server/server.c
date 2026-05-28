@@ -1034,23 +1034,6 @@ static void handle_connection(axctl_server_t *s, int fd)
     char buf[READ_BUF_SIZE];
     struct json_tokener *tok = json_tokener_new();
 
-    /* Send state dump immediately on connection.
-     * This lets the QML client receive initial data before it even
-     * sends System.Subscribe, eliminating the race window where
-     * CompositorData properties are accessed before being populated. */
-    {
-        json_object *state = build_state_dump(s);
-        json_object *greeting = json_object_new_object();
-        json_object_object_add(greeting, "jsonrpc", json_object_new_string("2.0"));
-        json_object_object_add(greeting, "method", json_object_new_string("State.Dump"));
-        json_object_object_add(greeting, "state", state);
-        const char *data = json_object_to_json_string_ext(greeting,
-                                                           JSON_C_TO_STRING_PLAIN);
-        write(fd, data, strlen(data));
-        write(fd, "\n", 1);
-        json_object_put(greeting);
-    }
-
     while (1) {
         ssize_t n = read(fd, buf, sizeof(buf) - 1);
         if (n <= 0) break;
