@@ -112,16 +112,9 @@ int axctl_config_handler_apply(axctl_compositor_t *comp,
         return -1;
     }
 
-    /* Generate config sections.
-     * NOTE: Keybinds are NOT generated from the TOML config.
-     * The QML handles keybinds exclusively via axctl config keybinds-batch,
-     * which uses hyprctl keyword to apply/remove keybinds at runtime.
-     * If we also wrote keybinds to the config file, Hyprland would load
-     * them on every reload, causing duplicate binds that fire 2x-4x per
-     * keypress (the keybinds-batch would add runtime copies on top of
-     * file copies, and each reload would compound them). */
+    /* Generate config sections */
     char *s_app     = gen.appearance   ? gen.appearance(&cfg->appearance) : axctl_strdup("");
-    char *s_bind    = axctl_strdup("");  /* keybinds skipped — handled by keybinds-batch */
+    char *s_bind    = gen.keybinds     ? gen.keybinds(cfg->custom_keybinds, cfg->custom_keybind_count) : axctl_strdup("");
     char *s_rules   = gen.window_rules ? gen.window_rules(cfg->window_rules, cfg->window_rule_count) : axctl_strdup("");
     char *s_layers  = gen.layer_rules  ? gen.layer_rules(cfg->layer_rules, cfg->layer_rule_count) : axctl_strdup("");
     char *s_startup = gen.startup      ? gen.startup(cfg->exec, cfg->exec_count, cfg->exec_once, cfg->exec_once_count) : axctl_strdup("");
@@ -158,7 +151,7 @@ int axctl_config_handler_apply(axctl_compositor_t *comp,
         free(lua_path);
 
         char *l_app     = gen.lua_appearance(&cfg->appearance);
-        char *l_bind    = axctl_strdup("");  /* keybinds skipped — handled by keybinds-batch */
+        char *l_bind    = gen.lua_keybinds ? gen.lua_keybinds(cfg->custom_keybinds, cfg->custom_keybind_count) : axctl_strdup("");
         char *l_rules   = gen.lua_window_rules ? gen.lua_window_rules(cfg->window_rules, cfg->window_rule_count) : axctl_strdup("");
         char *l_layers  = gen.lua_layer_rules  ? gen.lua_layer_rules(cfg->layer_rules, cfg->layer_rule_count) : axctl_strdup("");
         char *l_startup = gen.lua_startup      ? gen.lua_startup(cfg->exec, cfg->exec_count, cfg->exec_once, cfg->exec_once_count) : axctl_strdup("");
@@ -183,12 +176,9 @@ int axctl_config_handler_apply(axctl_compositor_t *comp,
     free(config_path);
     free(s_app); free(s_bind); free(s_rules); free(s_layers); free(s_startup);
 
-    /* Reload is SKIPPED — the config watcher auto-triggers this on TOML
-     * changes, but hyprctl reload would wipe ALL runtime keybinds
-     * applied by keybinds-batch. The QML calls axctl config reload
-     * explicitly when needed. */
-    // reload skipped: would wipe runtime keybinds from keybinds-batch
-    // QML handles explicit reloads via axctl config reload
+    /* Trigger compositor reload */
+    if (comp->reload_config)
+        return comp->reload_config(comp->priv);
 
     return AXCTL_OK;
 }
