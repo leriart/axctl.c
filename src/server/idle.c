@@ -20,6 +20,8 @@
 #include <ctype.h>
 #include <sys/wait.h>
 
+#include "protocols/ext-idle-notify-v1-client-protocol.h"
+#include "protocols/idle-inhibit-unstable-v1-client-protocol.h"
 #include "server/idle.h"
 #include "ipc/wayland/wayland_client.h"
 #include "utils/log.h"
@@ -36,15 +38,23 @@ typedef struct idle_monitor {
     int      enabled;
     int      is_idle;
     int      deleted;
-    /* In a full implementation, this would hold the
-     * ext_idle_notification_v1 proxy */
+
+    /* Real Wayland notification proxy */
+    struct ext_idle_notification_v1 *notification;
+
+    /* Condition variable for blocking waits */
+    pthread_cond_t  cond;
+    int             signaled;
 } idle_monitor_t;
 
 typedef struct idle_inhibitor {
     uint32_t id;
     int      enabled;
     int      deleted;
-    /* In a full implementation: zwp_idle_inhibitor_v1 + wl_surface */
+
+    /* Real Wayland inhibitor proxy + surface */
+    struct wl_surface          *surface;
+    struct zwp_idle_inhibitor_v1 *inhibitor;
 } idle_inhibitor_t;
 
 #define MAX_MONITORS   64
@@ -95,7 +105,7 @@ static idle_inhibitor_t *find_inhibitor(axctl_idle_manager_t *im, uint32_t id)
     return NULL;
 }
 
-/* Check if a string contains a pattern (case-insensitive). */
+/* Case-insensitive substring search */
 static int str_contains_ci(const char *haystack, const char *needle)
 {
     if (!haystack || !needle) return 0;
@@ -113,6 +123,144 @@ static int str_contains_ci(const char *haystack, const char *needle)
         if (match) return 1;
     }
     return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Wayland idle notification listeners                                 */
+/* ------------------------------------------------------------------ */
+
+/* Set monitor idle state and fire callback (caller must hold im->mu) */
+static void set_monitor_idle(axctl_idle_manager_t *im,
+                             idle_monitor_t *mon, int idle)
+{
+    if (mon->is_idle == idle)
+        return;
+
+    mon->is_idle = idle;
+    mon->signaled = 1;
+    pthread_cond_signal(&mon->cond);
+
+    if (im->on_changed)
+        im->on_changed(mon->id, idle, im->cb_userdata);
+}
+
+/* Listener callbacks for ext_idle_notification_v1 */
+static void notification_idled(void *data,
+                               struct ext_idle_notification_v1 *notif)
+{
+    idle_monitor_t *mon = (idle_monitor_t *)data;
+    (void)notif;
+
+    /* We need the manager pointer to fire the callback. Store it via
+     * user_data on the notification proxy. */
+    axctl_idle_manager_t *im = ext_idle_notification_v1_get_user_data(notif);
+    if (!im) return;
+
+    pthread_mutex_lock(&im->mu);
+    set_monitor_idle(im, mon, 1);
+    pthread_mutex_unlock(&im->mu);
+}
+
+static void notification_resumed(void *data,
+                                 struct ext_idle_notification_v1 *notif)
+{
+    idle_monitor_t *mon = (idle_monitor_t *)data;
+    (void)notif;
+
+    axctl_idle_manager_t *im = ext_idle_notification_v1_get_user_data(notif);
+    if (!im) return;
+
+    pthread_mutex_lock(&im->mu);
+    set_monitor_idle(im, mon, 0);
+    pthread_mutex_unlock(&im->mu);
+}
+
+static const struct ext_idle_notification_v1_listener idle_notif_listener = {
+    .idled   = notification_idled,
+    .resumed = notification_resumed,
+};
+
+/* ------------------------------------------------------------------ */
+/* Refresh monitor: (re)create the Wayland notification                */
+/* ------------------------------------------------------------------ */
+
+/* Must be called with im->mu held */
+static void refresh_monitor(axctl_idle_manager_t *im, idle_monitor_t *mon)
+{
+    /* Destroy previous notification if any */
+    if (mon->notification) {
+        ext_idle_notification_v1_destroy(mon->notification);
+        mon->notification = NULL;
+    }
+
+    if (!mon->enabled)
+        return;
+
+    struct ext_idle_notifier_v1 *notifier =
+        axctl_wayland_get_idle_notifier(im->wl_ctx);
+    struct wl_seat *seat = axctl_wayland_get_seat(im->wl_ctx);
+
+    if (!notifier || !seat) {
+        LOG_WARN("Cannot create idle notification: notifier=%p seat=%p",
+                 (void *)notifier, (void *)seat);
+        return;
+    }
+
+    /* Create the notification: timeout in milliseconds */
+    mon->notification = ext_idle_notifier_v1_get_idle_notification(
+        notifier, mon->timeout_ms, seat);
+
+    if (!mon->notification) {
+        LOG_ERROR("Failed to create ext_idle_notification_v1");
+        return;
+    }
+
+    /* Store the manager pointer so callbacks can access it */
+    ext_idle_notification_v1_set_user_data(mon->notification, im);
+
+    /* Set the idled/resumed listeners, passing the monitor as data */
+    ext_idle_notification_v1_add_listener(
+        mon->notification, &idle_notif_listener, mon);
+
+    /* Flush to ensure the compositor receives the request */
+    axctl_wayland_flush(im->wl_ctx);
+}
+
+/* ------------------------------------------------------------------ */
+/* Inhibitor helpers                                                   */
+/* ------------------------------------------------------------------ */
+
+/* Create/destroy the real Wayland idle inhibitor.
+ * Must be called with im->mu held. */
+static void refresh_inhibitor(axctl_idle_manager_t *im, idle_inhibitor_t *inh)
+{
+    if (inh->enabled && !inh->inhibitor) {
+        struct zwp_idle_inhibit_manager_v1 *mgr =
+            axctl_wayland_get_inhibit_manager(im->wl_ctx);
+        struct wl_compositor *comp =
+            axctl_wayland_get_compositor(im->wl_ctx);
+
+        if (!mgr || !comp) return;
+
+        /* Create a dummy surface for the inhibitor */
+        if (!inh->surface)
+            inh->surface = wl_compositor_create_surface(comp);
+
+        if (!inh->surface) return;
+
+        inh->inhibitor = zwp_idle_inhibit_manager_v1_create_inhibitor(
+            mgr, inh->surface);
+
+        axctl_wayland_flush(im->wl_ctx);
+    } else if (!inh->enabled && inh->inhibitor) {
+        zwp_idle_inhibitor_v1_destroy(inh->inhibitor);
+        inh->inhibitor = NULL;
+        if (inh->surface) {
+            wl_surface_destroy(inh->surface);
+            inh->surface = NULL;
+        }
+        axctl_wayland_flush(im->wl_ctx);
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -142,6 +290,23 @@ axctl_idle_manager_t *axctl_idle_manager_create(void)
 void axctl_idle_manager_destroy(axctl_idle_manager_t *im)
 {
     if (!im) return;
+
+    /* Destroy all active notifications */
+    for (int i = 0; i < im->monitor_count; i++) {
+        if (im->monitors[i].notification) {
+            ext_idle_notification_v1_destroy(im->monitors[i].notification);
+            im->monitors[i].notification = NULL;
+        }
+        pthread_cond_destroy(&im->monitors[i].cond);
+    }
+
+    /* Destroy all active inhibitors */
+    for (int i = 0; i < im->inhibitor_count; i++) {
+        if (im->inhibitors[i].inhibitor)
+            zwp_idle_inhibitor_v1_destroy(im->inhibitors[i].inhibitor);
+        if (im->inhibitors[i].surface)
+            wl_surface_destroy(im->inhibitors[i].surface);
+    }
 
     /* Kill system inhibitor if running */
     if (im->system_inhibit_pid > 0) {
@@ -179,6 +344,7 @@ int axctl_idle_inhibit(axctl_idle_manager_t *im, int on)
         im->legacy_inhibitor_id = im->next_inhibitor_id;
         if (im->inhibitor_count < MAX_INHIBITORS) {
             idle_inhibitor_t *inh = &im->inhibitors[im->inhibitor_count++];
+            memset(inh, 0, sizeof(*inh));
             inh->id = im->legacy_inhibitor_id;
             inh->enabled = 0;
         }
@@ -196,7 +362,7 @@ int axctl_idle_inhibit(axctl_idle_manager_t *im, int on)
     }
 
     inh->enabled = on;
-    /* In a full implementation, create/destroy zwp_idle_inhibitor_v1 */
+    refresh_inhibitor(im, inh);
 
     pthread_mutex_unlock(&im->mu);
     return 0;
@@ -219,6 +385,37 @@ int axctl_idle_is_inhibited(axctl_idle_manager_t *im)
 /* Wait for idle/resume                                                */
 /* ------------------------------------------------------------------ */
 
+/* Internal: create a short-lived notification, wait for idle event,
+ * then destroy it. Used by axctl_idle_wait / axctl_idle_is_idle. */
+typedef struct {
+    int              fired;
+    pthread_mutex_t  mu;
+    pthread_cond_t   cond;
+} oneshot_ctx_t;
+
+static void oneshot_idled(void *data,
+                          struct ext_idle_notification_v1 *notif)
+{
+    (void)notif;
+    oneshot_ctx_t *ctx = (oneshot_ctx_t *)data;
+    pthread_mutex_lock(&ctx->mu);
+    ctx->fired = 1;
+    pthread_cond_signal(&ctx->cond);
+    pthread_mutex_unlock(&ctx->mu);
+}
+
+static void oneshot_resumed(void *data,
+                            struct ext_idle_notification_v1 *notif)
+{
+    (void)data; (void)notif;
+    /* Not used for one-shot idle check, but required by listener struct */
+}
+
+static const struct ext_idle_notification_v1_listener oneshot_listener = {
+    .idled   = oneshot_idled,
+    .resumed = oneshot_resumed,
+};
+
 int axctl_idle_wait(axctl_idle_manager_t *im, uint32_t timeout_ms)
 {
     if (!im) return -1;
@@ -227,39 +424,153 @@ int axctl_idle_wait(axctl_idle_manager_t *im, uint32_t timeout_ms)
         return -1;
     }
 
-    /* In a full implementation with wayland-scanner generated code:
-     * 1. Create ext_idle_notification_v1 via notifier.get_idle_notification()
-     * 2. Set idled handler that signals a condition variable
-     * 3. Wait on the condition variable
-     * 4. Destroy the notification
-     *
-     * For now, we use a simplified poll-based approach as a stub.
-     */
-    (void)timeout_ms;
-    LOG_WARN("idle_wait: requires full Wayland protocol binding (stub)");
+    struct ext_idle_notifier_v1 *notifier =
+        axctl_wayland_get_idle_notifier(im->wl_ctx);
+    struct wl_seat *seat = axctl_wayland_get_seat(im->wl_ctx);
+    if (!notifier || !seat) return -1;
+
+    /* Create a one-shot notification to wait for idle */
+    struct ext_idle_notification_v1 *notif =
+        ext_idle_notifier_v1_get_idle_notification(notifier, timeout_ms, seat);
+    if (!notif) return -1;
+
+    oneshot_ctx_t ctx = { .fired = 0 };
+    pthread_mutex_init(&ctx.mu, NULL);
+    pthread_cond_init(&ctx.cond, NULL);
+
+    ext_idle_notification_v1_add_listener(notif, &oneshot_listener, &ctx);
+    axctl_wayland_flush(im->wl_ctx);
+
+    /* Block until the idled event fires (dispatched by background thread) */
+    pthread_mutex_lock(&ctx.mu);
+    while (!ctx.fired)
+        pthread_cond_wait(&ctx.cond, &ctx.mu);
+    pthread_mutex_unlock(&ctx.mu);
+
+    ext_idle_notification_v1_destroy(notif);
+    axctl_wayland_flush(im->wl_ctx);
+    pthread_mutex_destroy(&ctx.mu);
+    pthread_cond_destroy(&ctx.cond);
+
     return 0;
 }
+
+/* Context for wait-resume one-shot */
+typedef struct {
+    int              idled;
+    int              resumed;
+    pthread_mutex_t  mu;
+    pthread_cond_t   cond;
+} resume_ctx_t;
+
+static void resume_idled_cb(void *data, struct ext_idle_notification_v1 *n)
+{
+    (void)n;
+    resume_ctx_t *r = (resume_ctx_t *)data;
+    pthread_mutex_lock(&r->mu);
+    r->idled = 1;
+    pthread_mutex_unlock(&r->mu);
+}
+
+static void resume_resumed_cb(void *data, struct ext_idle_notification_v1 *n)
+{
+    (void)n;
+    resume_ctx_t *r = (resume_ctx_t *)data;
+    pthread_mutex_lock(&r->mu);
+    r->resumed = 1;
+    pthread_cond_signal(&r->cond);
+    pthread_mutex_unlock(&r->mu);
+}
+
+static const struct ext_idle_notification_v1_listener resume_listener = {
+    .idled   = resume_idled_cb,
+    .resumed = resume_resumed_cb,
+};
 
 int axctl_idle_wait_resume(axctl_idle_manager_t *im, uint32_t timeout_ms)
 {
     if (!im) return -1;
-    (void)timeout_ms;
-    LOG_WARN("idle_wait_resume: requires full Wayland protocol binding (stub)");
+    if (!axctl_wayland_has_idle_notifier(im->wl_ctx)) {
+        LOG_ERROR("idle_notify not supported by compositor");
+        return -1;
+    }
+
+    struct ext_idle_notifier_v1 *notifier =
+        axctl_wayland_get_idle_notifier(im->wl_ctx);
+    struct wl_seat *seat = axctl_wayland_get_seat(im->wl_ctx);
+    if (!notifier || !seat) return -1;
+
+    struct ext_idle_notification_v1 *notif =
+        ext_idle_notifier_v1_get_idle_notification(notifier, timeout_ms, seat);
+    if (!notif) return -1;
+
+    resume_ctx_t *rctx = calloc(1, sizeof(*rctx));
+    pthread_mutex_init(&rctx->mu, NULL);
+    pthread_cond_init(&rctx->cond, NULL);
+
+    ext_idle_notification_v1_add_listener(notif, &resume_listener, rctx);
+    axctl_wayland_flush(im->wl_ctx);
+
+    /* Block until resumed event fires */
+    pthread_mutex_lock(&rctx->mu);
+    while (!rctx->resumed)
+        pthread_cond_wait(&rctx->cond, &rctx->mu);
+    pthread_mutex_unlock(&rctx->mu);
+
+    ext_idle_notification_v1_destroy(notif);
+    axctl_wayland_flush(im->wl_ctx);
+    pthread_mutex_destroy(&rctx->mu);
+    pthread_cond_destroy(&rctx->cond);
+    free(rctx);
+
     return 0;
 }
 
 int axctl_idle_is_idle(axctl_idle_manager_t *im, uint32_t timeout_ms, int *is_idle)
 {
     if (!im) return -1;
-    (void)timeout_ms;
     *is_idle = 0;
-    /* Stub: would create short-lived notification, do sync, check if idled */
+
+    if (!axctl_wayland_has_idle_notifier(im->wl_ctx))
+        return -1;
+
+    struct ext_idle_notifier_v1 *notifier =
+        axctl_wayland_get_idle_notifier(im->wl_ctx);
+    struct wl_seat *seat = axctl_wayland_get_seat(im->wl_ctx);
+    if (!notifier || !seat) return -1;
+
+    /* Create a short-lived notification and immediately sync to see
+     * if the idled event fires during the roundtrip. */
+    struct ext_idle_notification_v1 *notif =
+        ext_idle_notifier_v1_get_idle_notification(notifier, timeout_ms, seat);
+    if (!notif) return -1;
+
+    oneshot_ctx_t ctx = { .fired = 0 };
+    pthread_mutex_init(&ctx.mu, NULL);
+    pthread_cond_init(&ctx.cond, NULL);
+
+    ext_idle_notification_v1_add_listener(notif, &oneshot_listener, &ctx);
+    axctl_wayland_flush(im->wl_ctx);
+
+    /* Do a sync roundtrip – if already idle, the event fires during this */
+    axctl_wayland_roundtrip(im->wl_ctx);
+
+    pthread_mutex_lock(&ctx.mu);
+    *is_idle = ctx.fired;
+    pthread_mutex_unlock(&ctx.mu);
+
+    ext_idle_notification_v1_destroy(notif);
+    axctl_wayland_flush(im->wl_ctx);
+    pthread_mutex_destroy(&ctx.mu);
+    pthread_cond_destroy(&ctx.cond);
+
     return 0;
 }
 
 int axctl_idle_wait_input(axctl_idle_manager_t *im, uint32_t timeout_ms)
 {
-    return axctl_idle_wait(im, timeout_ms); /* Same approach, input-only */
+    /* ext_idle_notifier_v1 is input-based by default */
+    return axctl_idle_wait(im, timeout_ms);
 }
 
 int axctl_idle_wait_input_resume(axctl_idle_manager_t *im, uint32_t timeout_ms)
@@ -293,11 +604,16 @@ int axctl_idle_monitor_create(axctl_idle_manager_t *im,
 
     im->next_monitor_id++;
     idle_monitor_t *mon = &im->monitors[im->monitor_count++];
+    memset(mon, 0, sizeof(*mon));
     mon->id = im->next_monitor_id;
     mon->timeout_ms = timeout_ms;
     mon->respect_inhibitors = respect_inhibitors;
     mon->enabled = enabled;
     mon->is_idle = 0;
+    pthread_cond_init(&mon->cond, NULL);
+
+    /* Create real Wayland notification if enabled */
+    refresh_monitor(im, mon);
 
     out->id = mon->id;
     out->timeout_ms = mon->timeout_ms;
@@ -325,6 +641,9 @@ int axctl_idle_monitor_update(axctl_idle_manager_t *im, uint32_t id,
     mon->timeout_ms = timeout_ms;
     mon->respect_inhibitors = respect_inhibitors;
     mon->enabled = enabled;
+
+    /* Recreate the notification with updated parameters */
+    refresh_monitor(im, mon);
 
     out->id = mon->id;
     out->timeout_ms = mon->timeout_ms;
@@ -369,7 +688,15 @@ int axctl_idle_monitor_destroy(axctl_idle_manager_t *im, uint32_t id)
         return -1;
     }
 
+    /* Destroy the Wayland notification */
+    if (mon->notification) {
+        ext_idle_notification_v1_destroy(mon->notification);
+        mon->notification = NULL;
+        axctl_wayland_flush(im->wl_ctx);
+    }
+
     mon->deleted = 1;
+    pthread_cond_destroy(&mon->cond);
 
     pthread_mutex_unlock(&im->mu);
     return 0;
@@ -392,8 +719,12 @@ int axctl_idle_inhibitor_create(axctl_idle_manager_t *im, int enabled,
 
     im->next_inhibitor_id++;
     idle_inhibitor_t *inh = &im->inhibitors[im->inhibitor_count++];
+    memset(inh, 0, sizeof(*inh));
     inh->id = im->next_inhibitor_id;
     inh->enabled = enabled;
+
+    /* Create real Wayland inhibitor if enabled */
+    refresh_inhibitor(im, inh);
 
     out->id = inh->id;
     out->enabled = inh->enabled;
@@ -415,6 +746,8 @@ int axctl_idle_inhibitor_set(axctl_idle_manager_t *im, uint32_t id,
     }
 
     inh->enabled = enabled;
+    refresh_inhibitor(im, inh);
+
     out->id = inh->id;
     out->enabled = inh->enabled;
 
@@ -452,6 +785,17 @@ int axctl_idle_inhibitor_destroy(axctl_idle_manager_t *im, uint32_t id)
         return -1;
     }
 
+    /* Destroy the real Wayland inhibitor */
+    if (inh->inhibitor) {
+        zwp_idle_inhibitor_v1_destroy(inh->inhibitor);
+        inh->inhibitor = NULL;
+    }
+    if (inh->surface) {
+        wl_surface_destroy(inh->surface);
+        inh->surface = NULL;
+    }
+    axctl_wayland_flush(im->wl_ctx);
+
     inh->deleted = 1;
     if (im->legacy_inhibitor_id == id)
         im->legacy_inhibitor_id = 0;
@@ -481,7 +825,6 @@ int axctl_idle_inhibit_system(axctl_idle_manager_t *im, int on)
             return -1;
         }
         if (pid == 0) {
-            /* Child process */
             execlp("systemd-inhibit",
                    "systemd-inhibit",
                    "--what=sleep:idle",
@@ -542,7 +885,6 @@ int axctl_idle_media_check(axctl_idle_manager_t *im, json_object **result)
     json_object *apps_arr = json_object_new_array();
     int count = 0;
 
-    /* Run pactl list sink-inputs */
     FILE *fp = popen("pactl list sink-inputs 2>/dev/null", "r");
     if (fp) {
         char line[1024];
@@ -555,10 +897,8 @@ int axctl_idle_media_check(axctl_idle_manager_t *im, json_object **result)
             char *trimmed = line;
             while (*trimmed == ' ' || *trimmed == '\t') trimmed++;
 
-            /* New block header */
             if (strncmp(trimmed, "Sink Input #", 12) == 0 ||
                 strncmp(trimmed, "SinkInput #", 11) == 0) {
-                /* Process previous block */
                 if (in_block && !corked && !muted && app_name[0] &&
                     !is_media_blacklisted(app_name)) {
                     json_object_array_add(apps_arr,
@@ -588,7 +928,6 @@ int axctl_idle_media_check(axctl_idle_manager_t *im, json_object **result)
             if (in_props && !app_name[0]) {
                 if (strncmp(trimmed, "application.name = ", 19) == 0) {
                     char *val = trimmed + 19;
-                    /* Strip quotes and newline */
                     char *p = val;
                     while (*p == '"') p++;
                     char *end = p + strlen(p) - 1;
@@ -607,7 +946,6 @@ int axctl_idle_media_check(axctl_idle_manager_t *im, json_object **result)
             }
         }
 
-        /* Process last block */
         if (in_block && !corked && !muted && app_name[0] &&
             !is_media_blacklisted(app_name)) {
             json_object_array_add(apps_arr,
@@ -647,7 +985,6 @@ int axctl_idle_app_check(axctl_idle_manager_t *im,
         while (default_patterns[pcount]) pcount++;
     }
 
-    /* Check Hyprland apps if available */
     if (getenv("HYPRLAND_INSTANCE_SIGNATURE")) {
         FILE *fp = popen("hyprctl clients -j 2>/dev/null", "r");
         if (fp) {
@@ -679,7 +1016,6 @@ int axctl_idle_app_check(axctl_idle_manager_t *im,
         }
     }
 
-    /* Fallback: scan /proc */
     DIR *proc = opendir("/proc");
     if (!proc) return 0;
 
@@ -695,7 +1031,6 @@ int axctl_idle_app_check(axctl_idle_manager_t *im,
 
         char comm[256];
         if (fgets(comm, sizeof(comm), f)) {
-            /* Strip newline */
             char *nl = strchr(comm, '\n');
             if (nl) *nl = 0;
 

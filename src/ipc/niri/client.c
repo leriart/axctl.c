@@ -424,6 +424,10 @@ static int niri_list_workspaces(void *priv, axctl_workspace_array_t *out) {
             ws.monitor_id = axctl_strdup(json_get_string(w, "output"));
             ws.is_active = json_get_bool(w, "is_active", false);
             ws.is_empty = false;
+            /* Add metadata with focused field (matches Go original) */
+            ws.metadata = json_object_new_object();
+            json_object_object_add(ws.metadata, "focused",
+                json_object_new_boolean(ws.is_active));
             axctl_workspace_array_push(out, ws);
         }
     }
@@ -451,6 +455,10 @@ static int niri_active_workspace(void *priv, axctl_workspace_t *out) {
                     out->name = axctl_strdup(json_get_string(w, "name"));
                     out->monitor_id = axctl_strdup(json_get_string(w, "output"));
                     out->is_active = true;
+                    /* Add metadata with focused field (matches Go original) */
+                    out->metadata = json_object_new_object();
+                    json_object_object_add(out->metadata, "focused",
+                        json_object_new_boolean(1));
                     break;
                 }
             }

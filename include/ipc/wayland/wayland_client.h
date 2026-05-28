@@ -30,6 +30,10 @@ struct wl_display *axctl_wayland_get_display(axctl_wayland_ctx_t *ctx);
 struct wl_compositor *axctl_wayland_get_compositor(axctl_wayland_ctx_t *ctx);
 struct wl_seat *axctl_wayland_get_seat(axctl_wayland_ctx_t *ctx);
 
+/* Get typed protocol objects */
+struct ext_idle_notifier_v1 *axctl_wayland_get_idle_notifier(axctl_wayland_ctx_t *ctx);
+struct zwp_idle_inhibit_manager_v1 *axctl_wayland_get_inhibit_manager(axctl_wayland_ctx_t *ctx);
+
 /* Check protocol availability */
 int axctl_wayland_has_idle_notifier(axctl_wayland_ctx_t *ctx);
 int axctl_wayland_has_inhibit_manager(axctl_wayland_ctx_t *ctx);

@@ -675,6 +675,10 @@ static int hypr_list_workspaces(void *priv, axctl_workspace_array_t *out) {
         ws.is_active = (ws_id == active_id);
         /* Go: IsEmpty = false always (not parsing windows count) */
         ws.is_empty = false;
+        /* Add metadata with focused field (matches Go original) */
+        ws.metadata = json_object_new_object();
+        json_object_object_add(ws.metadata, "focused",
+            json_object_new_boolean(ws.is_active));
         axctl_workspace_array_push(out, ws);
     }
 
@@ -699,6 +703,10 @@ static int hypr_active_workspace(void *priv, axctl_workspace_t *out) {
     out->is_active = true;
     /* Go: IsEmpty = false */
     out->is_empty = false;
+    /* Add metadata with focused field (matches Go original) */
+    out->metadata = json_object_new_object();
+    json_object_object_add(out->metadata, "focused",
+        json_object_new_boolean(1));
 
     json_object_put(obj);
     return AXCTL_OK;

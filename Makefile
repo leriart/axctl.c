@@ -11,11 +11,11 @@
 
 CC       ?= gcc
 CFLAGS   := -Wall -Wextra -Wno-unused-parameter -std=c11 -D_GNU_SOURCE \
-            -Iinclude \
-            $(shell pkg-config --cflags json-c wayland-client 2>/dev/null)
+	    -Iinclude \
+	    $(shell pkg-config --cflags json-c wayland-client 2>/dev/null)
 
 LDFLAGS  := $(shell pkg-config --libs json-c wayland-client 2>/dev/null) \
-            -lpthread
+	    -lpthread
 
 # Source files
 SRCS := \
@@ -36,6 +36,8 @@ SRCS := \
     src/ipc/mango/client.c \
     src/ipc/mango/generator.c \
     src/ipc/wayland/wayland_client.c \
+    src/protocols/ext-idle-notify-v1-protocol.c \
+    src/protocols/idle-inhibit-unstable-v1-protocol.c \
     src/server/server.c \
     src/server/idle.c \
     src/server/config_handler.c \

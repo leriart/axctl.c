@@ -6,10 +6,6 @@
  *   - wl_seat (for idle notifications)
  *   - ext_idle_notifier_v1 (for idle/resume detection)
  *   - zwp_idle_inhibit_manager_v1 (for idle inhibition)
- *
- * NOTE: The ext_idle_notify_v1 and zwp_idle_inhibit_v1 protocols require
- * wayland-scanner generated headers. For this migration, we use
- * wl_proxy-based manual binding as a compatible approach.
  */
 
 #include <stdio.h>
@@ -18,6 +14,8 @@
 #include <pthread.h>
 #include <wayland-client.h>
 
+#include "protocols/ext-idle-notify-v1-client-protocol.h"
+#include "protocols/idle-inhibit-unstable-v1-client-protocol.h"
 #include "ipc/wayland/wayland_client.h"
 #include "utils/log.h"
 
@@ -31,14 +29,14 @@ struct axctl_wayland_ctx {
     struct wl_compositor *compositor;
     struct wl_seat       *seat;
 
-    /* Protocol globals – stored as wl_proxy since we don't have
-     * scanner-generated types. Null if not available. */
-    struct wl_proxy      *idle_notifier;     /* ext_idle_notifier_v1 */
-    struct wl_proxy      *inhibit_manager;   /* zwp_idle_inhibit_manager_v1 */
+    /* Protocol globals – now using proper typed pointers. */
+    struct ext_idle_notifier_v1        *idle_notifier;
+    struct zwp_idle_inhibit_manager_v1 *inhibit_manager;
 
     uint32_t idle_notifier_name;
     uint32_t idle_notifier_version;
     uint32_t inhibit_mgr_name;
+    uint32_t inhibit_mgr_version;
 
     pthread_t dispatch_thread;
     int       running;
@@ -62,11 +60,17 @@ static void registry_global(void *data, struct wl_registry *registry,
         ctx->seat = wl_registry_bind(registry, name,
             &wl_seat_interface, 1);
     } else if (strcmp(interface, "ext_idle_notifier_v1") == 0) {
-        /* Store info for later manual binding */
         ctx->idle_notifier_name = name;
-        ctx->idle_notifier_version = version > 2 ? 2 : version;
+        ctx->idle_notifier_version = version > 1 ? 1 : version;
+        /* Bind the idle notifier immediately */
+        ctx->idle_notifier = wl_registry_bind(registry, name,
+            &ext_idle_notifier_v1_interface, ctx->idle_notifier_version);
     } else if (strcmp(interface, "zwp_idle_inhibit_manager_v1") == 0) {
         ctx->inhibit_mgr_name = name;
+        ctx->inhibit_mgr_version = version > 1 ? 1 : version;
+        /* Bind the inhibit manager immediately */
+        ctx->inhibit_manager = wl_registry_bind(registry, name,
+            &zwp_idle_inhibit_manager_v1_interface, ctx->inhibit_mgr_version);
     }
 }
 
@@ -127,7 +131,7 @@ axctl_wayland_ctx_t *axctl_wayland_connect(void)
 
     wl_registry_add_listener(ctx->registry, &registry_listener, ctx);
 
-    /* Roundtrip to discover globals */
+    /* Roundtrip to discover and bind globals */
     wl_display_roundtrip(display);
 
     /* Start background dispatch thread */
@@ -142,6 +146,13 @@ void axctl_wayland_disconnect(axctl_wayland_ctx_t *ctx)
 {
     if (!ctx) return;
     ctx->running = 0;
+
+    /* Destroy protocol objects before disconnecting */
+    if (ctx->idle_notifier)
+        ext_idle_notifier_v1_destroy(ctx->idle_notifier);
+    if (ctx->inhibit_manager)
+        zwp_idle_inhibit_manager_v1_destroy(ctx->inhibit_manager);
+
     if (ctx->display)
         wl_display_disconnect(ctx->display);
     pthread_mutex_destroy(&ctx->mu);
@@ -163,14 +174,24 @@ struct wl_seat *axctl_wayland_get_seat(axctl_wayland_ctx_t *ctx)
     return ctx ? ctx->seat : NULL;
 }
 
+struct ext_idle_notifier_v1 *axctl_wayland_get_idle_notifier(axctl_wayland_ctx_t *ctx)
+{
+    return ctx ? ctx->idle_notifier : NULL;
+}
+
+struct zwp_idle_inhibit_manager_v1 *axctl_wayland_get_inhibit_manager(axctl_wayland_ctx_t *ctx)
+{
+    return ctx ? ctx->inhibit_manager : NULL;
+}
+
 int axctl_wayland_has_idle_notifier(axctl_wayland_ctx_t *ctx)
 {
-    return ctx && ctx->idle_notifier_name != 0;
+    return ctx && ctx->idle_notifier != NULL;
 }
 
 int axctl_wayland_has_inhibit_manager(axctl_wayland_ctx_t *ctx)
 {
-    return ctx && ctx->inhibit_mgr_name != 0;
+    return ctx && ctx->inhibit_manager != NULL;
 }
 
 void axctl_wayland_roundtrip(axctl_wayland_ctx_t *ctx)
