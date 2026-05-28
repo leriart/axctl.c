@@ -375,6 +375,38 @@ char *axctl_config_to_json(axctl_toml_config_t *cfg)
             json_object_object_add(bind, "enabled",
                 json_object_new_boolean(enabled));
 
+            /* Parse modifiers (TOML array stored as string like ["SUPER"] or ["SUPER","SHIFT"]) */
+            const char *mods_raw = kv_get(cfg, kv->section, "modifiers");
+            json_object *mods_arr = json_object_new_array();
+            if (mods_raw && *mods_raw) {
+                const char *p = mods_raw;
+                if (*p == '[') p++;
+                while (*p && *p != ']') {
+                    while (*p == ' ' || *p == '\t' || *p == ',') p++;
+                    if (*p == '"') {
+                        p++;
+                        char mod_buf[64];
+                        int mi = 0;
+                        while (*p && *p != '"' && mi < 63)
+                            mod_buf[mi++] = *p++;
+                        mod_buf[mi] = '\0';
+                        if (*p == '"') p++;
+                        if (mi > 0)
+                            json_object_array_add(mods_arr, json_object_new_string(mod_buf));
+                    } else if (*p == ']') {
+                        break;
+                    } else {
+                        p++;
+                    }
+                }
+            }
+            json_object_object_add(bind, "modifiers", mods_arr);
+
+            /* Parse flags (empty flags like flags = "" are stored as empty string by unquote) */
+            const char *flags_val = kv_get(cfg, kv->section, "flags");
+            if (flags_val && *flags_val)
+                json_object_object_add(bind, "flags", json_object_new_string(flags_val));
+
             json_object_array_add(kb_custom, bind);
         }
     }
