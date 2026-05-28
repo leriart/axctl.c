@@ -272,6 +272,7 @@ static void run_daemon(const char *custom_config_path)
     /* Set up signal handlers */
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
+    signal(SIGPIPE, SIG_IGN);  /* Don't crash when writing to closed sockets */
 
     /* Start server (blocking) in a thread so we can handle signals */
     pthread_t server_tid;
