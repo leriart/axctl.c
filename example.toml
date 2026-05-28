@@ -1,0 +1,132 @@
+# axctl example configuration
+# Place at: ~/.config/axctl/config.toml
+
+include = ["appearance.toml", "keybinds.toml"]
+
+[appearance.gaps]
+inner = 5
+outer = 10
+
+[appearance.border]
+width = 2
+rounding = 12
+active_color = "#ff5733"
+inactive_color = "#333333"
+
+[appearance.opacity]
+active = 1.0
+inactive = 0.9
+fullscreen = 1.0
+
+[appearance.dim]
+enabled = false
+strength = 0.50
+around = 0.40
+special = 0.20
+
+[appearance.blur]
+enabled = true
+size = 8
+passes = 2
+ignore_opacity = true
+new_optimizations = true
+xray = false
+noise = 0.01
+contrast = 1.0
+brightness = 1.0
+vibrancy = 0.2
+vibrancy_darkness = 0.0
+
+[appearance.shadow]
+enabled = true
+range = 8
+render_power = 3
+offset = "0 0"
+scale = 1.0
+
+[appearance.animations]
+enabled = true
+
+[general]
+layout = "dwindle"
+allow_tearing = false
+resize_on_border = true
+extend_border_grab_area = 15
+hover_icon_on_border = true
+
+[general.snap]
+enabled = true
+window_gap = 10
+monitor_gap = 10
+border_overlap = false
+respect_gaps = false
+
+[input.keyboard]
+layouts = "us,es"
+variants = "altgr-intl,"
+repeat_rate = 25
+repeat_delay = 600
+numlock_by_default = true
+
+[input.mouse]
+natural_scroll = false
+scroll_factor = 1.0
+left_handed = false
+
+[input.touchpad]
+natural_scroll = true
+clickfinger_behavior = false
+disable_while_typing = true
+scroll_factor = 1.0
+
+[[keybinds]]
+modifiers = ["SUPER"]
+key = "Return"
+dispatcher = "exec"
+argument = "kitty"
+enabled = true
+comment = "Launch terminal"
+
+[[keybinds]]
+modifiers = ["SUPER"]
+key = "D"
+dispatcher = "exec"
+argument = "nothingless run dashboard"
+enabled = true
+comment = "Launch dashboard"
+
+[[keybinds]]
+modifiers = ["SUPER"]
+key = "Q"
+dispatcher = "closewindow"
+enabled = true
+comment = "Close focused window"
+
+[[keybinds]]
+modifiers = ["SUPER", "SHIFT"]
+key = "mouse:272"
+dispatcher = "movewindow"
+flags = "m"
+enabled = true
+comment = "Move window with mouse"
+
+[[keybinds]]
+modifiers = ["SUPER"]
+key = "mouse:273"
+dispatcher = "resizeactive"
+flags = "m"
+enabled = true
+comment = "Resize window with mouse"
+
+[[window_rules]]
+match = "class:firefox"
+rule = "float"
+
+[[window_rules]]
+match = "title:Save As"
+rule = "float"
+size = "800 600"
+
+[startup]
+exec = ["waybar &", "dunst &"]
+exec-once = ["nothingless"]
