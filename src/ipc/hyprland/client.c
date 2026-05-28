@@ -919,8 +919,15 @@ static int hypr_batch_config(void *priv, struct json_object *configs) {
  * Go uses [[BATCH]] prefix with semicolon-separated commands. */
 static int hypr_batch_keybinds(void *priv, const char *json_payload) {
     hyprland_data_t *d = (hyprland_data_t *)priv;
+    if (!json_payload || !*json_payload) {
+        LOG_WARN("batch_keybinds: empty payload");
+        return AXCTL_ERR_PARSE;
+    }
     struct json_object *root = json_tokener_parse(json_payload);
-    if (!root) return AXCTL_ERR_PARSE;
+    if (!root) {
+        LOG_ERROR("batch_keybinds: failed to parse JSON payload");
+        return AXCTL_ERR_PARSE;
+    }
 
     /* Collect commands into a dynamic array, then join with ";" */
     char *batch_parts = axctl_strdup("");
@@ -1038,7 +1045,10 @@ static int hypr_batch_keybinds(void *priv, const char *json_payload) {
     /* Go: h.dispatch("[[BATCH]]" + strings.Join(cmds, ";")) */
     char *cmd = axctl_sprintf("[[BATCH]]%s", batch_parts);
     free(batch_parts);
+    LOG_DEBUG("batch_keybinds: dispatching %zu chars", strlen(cmd));
     int rc = hypr_dispatch_locked(d, cmd, NULL);
+    if (rc != 0)
+        LOG_ERROR("batch_keybinds: dispatch failed with rc=%d", rc);
     free(cmd);
     return rc;
 }
@@ -1099,13 +1109,35 @@ static int hypr_unbind_key(void *priv, const char *mods, const char *key) {
     return rc;
 }
 
+/* Helper: escape a string for embedding in a Lua double-quoted literal.
+ * Matches Go's fmt.Sprintf(%q, ...) behavior for safe Lua strings.
+ * Caller must free the returned string. */
+static char *lua_escape_for_cmd(const char *s) {
+    if (!s || !*s) return axctl_strdup("\"\"");
+    size_t len = strlen(s);
+    char *buf = malloc(len * 2 + 3);
+    if (!buf) return axctl_strdup("\"\"");
+    char *p = buf;
+    *p++ = '"';
+    for (size_t i = 0; i < len; i++) {
+        if (s[i] == '"' || s[i] == '\\') *p++ = '\\';
+        else if (s[i] == '\n') { *p++ = '\\'; *p++ = 'n'; continue; }
+        else if (s[i] == '\t') { *p++ = '\\'; *p++ = 't'; continue; }
+        *p++ = s[i];
+    }
+    *p++ = '"';
+    *p = '\0';
+    return buf;
+}
+
 /* Execute: versioned dispatch */
 static int hypr_execute(void *priv, const char *command) {
     hyprland_data_t *d = (hyprland_data_t *)priv;
     char *legacy = axctl_sprintf("exec %s", command);
-    char *lua = axctl_sprintf("hl.dsp.exec_cmd(\"%s\")", command);
+    char *qcmd = lua_escape_for_cmd(command);
+    char *lua = axctl_sprintf("hl.dsp.exec_cmd(%s)", qcmd);
     int rc = hypr_dispatch_versioned(d, legacy, lua, NULL);
-    free(legacy); free(lua);
+    free(legacy); free(lua); free(qcmd);
     return rc;
 }
 

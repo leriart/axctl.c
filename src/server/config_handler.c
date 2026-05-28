@@ -112,9 +112,35 @@ int axctl_config_handler_apply(axctl_compositor_t *comp,
         return -1;
     }
 
+    /* Merge all keybind sources (ambxst system + ambxst binds + custom) into
+     * a single flat array, matching Go's behavior where GenerateKeybinds
+     * iterates all three sections sequentially. */
+    int total_binds = cfg->ambxst_system_keybind_count +
+                      cfg->ambxst_bind_count +
+                      cfg->custom_keybind_count;
+    axctl_keybind_t *merged_binds = NULL;
+    if (total_binds > 0) {
+        merged_binds = calloc(total_binds, sizeof(axctl_keybind_t));
+        int idx = 0;
+        /* Ambxst system keybinds first */
+        if (cfg->ambxst_system_keybinds)
+            memcpy(&merged_binds[idx], cfg->ambxst_system_keybinds,
+                   cfg->ambxst_system_keybind_count * sizeof(axctl_keybind_t));
+        idx += cfg->ambxst_system_keybind_count;
+        /* Ambxst named binds */
+        if (cfg->ambxst_binds)
+            memcpy(&merged_binds[idx], cfg->ambxst_binds,
+                   cfg->ambxst_bind_count * sizeof(axctl_keybind_t));
+        idx += cfg->ambxst_bind_count;
+        /* Custom keybinds */
+        if (cfg->custom_keybinds)
+            memcpy(&merged_binds[idx], cfg->custom_keybinds,
+                   cfg->custom_keybind_count * sizeof(axctl_keybind_t));
+    }
+
     /* Generate config sections */
     char *s_app     = gen.appearance   ? gen.appearance(&cfg->appearance) : axctl_strdup("");
-    char *s_bind    = gen.keybinds     ? gen.keybinds(cfg->custom_keybinds, cfg->custom_keybind_count) : axctl_strdup("");
+    char *s_bind    = gen.keybinds     ? gen.keybinds(merged_binds, total_binds) : axctl_strdup("");
     char *s_rules   = gen.window_rules ? gen.window_rules(cfg->window_rules, cfg->window_rule_count) : axctl_strdup("");
     char *s_layers  = gen.layer_rules  ? gen.layer_rules(cfg->layer_rules, cfg->layer_rule_count) : axctl_strdup("");
     char *s_startup = gen.startup      ? gen.startup(cfg->exec, cfg->exec_count, cfg->exec_once, cfg->exec_once_count) : axctl_strdup("");
@@ -151,7 +177,7 @@ int axctl_config_handler_apply(axctl_compositor_t *comp,
         free(lua_path);
 
         char *l_app     = gen.lua_appearance(&cfg->appearance);
-        char *l_bind    = gen.lua_keybinds ? gen.lua_keybinds(cfg->custom_keybinds, cfg->custom_keybind_count) : axctl_strdup("");
+        char *l_bind    = gen.lua_keybinds ? gen.lua_keybinds(merged_binds, total_binds) : axctl_strdup("");
         char *l_rules   = gen.lua_window_rules ? gen.lua_window_rules(cfg->window_rules, cfg->window_rule_count) : axctl_strdup("");
         char *l_layers  = gen.lua_layer_rules  ? gen.lua_layer_rules(cfg->layer_rules, cfg->layer_rule_count) : axctl_strdup("");
         char *l_startup = gen.lua_startup      ? gen.lua_startup(cfg->exec, cfg->exec_count, cfg->exec_once, cfg->exec_once_count) : axctl_strdup("");
@@ -175,6 +201,8 @@ int axctl_config_handler_apply(axctl_compositor_t *comp,
     /* Cleanup */
     free(config_path);
     free(s_app); free(s_bind); free(s_rules); free(s_layers); free(s_startup);
+    /* merged_binds is a shallow copy (pointers shared with cfg), only free the array */
+    free(merged_binds);
 
     /* Trigger compositor reload */
     if (comp->reload_config)

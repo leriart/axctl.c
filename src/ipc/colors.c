@@ -90,3 +90,80 @@ char *axctl_hyprland_color(const char *hex_str) {
     }
     return axctl_sprintf("rgba(%s%s%s%s)", r, g, b, a);
 }
+
+/*
+ * axctl_parse_color_string — port of Go's parseColorString()
+ *
+ * Splits a space-delimited color string into individual tokens:
+ *   - If token is already rgb()/rgba() → pass through unchanged
+ *   - If token starts with # or is 6/8 hex chars → convert via axctl_hyprland_color
+ *   - If token ends with "deg" → treat as gradient angle
+ *
+ * out_colors receives the joined color tokens (caller frees).
+ * out_angle  receives the angle token or NULL   (caller frees if non-NULL).
+ */
+void axctl_parse_color_string(const char *str, char **out_colors, char **out_angle) {
+    *out_colors = NULL;
+    *out_angle  = NULL;
+    if (!str || !*str) return;
+
+    /* Work on a mutable copy for strtok */
+    char *buf = axctl_strdup(str);
+    char *colors = axctl_strdup("");
+    char *angle  = NULL;
+    int color_count = 0;
+
+    char *saveptr = NULL;
+    char *tok = strtok_r(buf, " \t", &saveptr);
+    while (tok) {
+        size_t tlen = strlen(tok);
+
+        /* Angle token: ends with "deg" */
+        if (tlen > 3 && strcmp(tok + tlen - 3, "deg") == 0) {
+            free(angle);
+            angle = axctl_strdup(tok);
+            tok = strtok_r(NULL, " \t", &saveptr);
+            continue;
+        }
+
+        /* Already wrapped in rgb()/rgba() → pass through */
+        if (strncmp(tok, "rgb(", 4) == 0 || strncmp(tok, "rgba(", 5) == 0) {
+            if (color_count > 0) axctl_str_append(&colors, " ");
+            axctl_str_append(&colors, tok);
+            color_count++;
+            tok = strtok_r(NULL, " \t", &saveptr);
+            continue;
+        }
+
+        /* Hex color: starts with # or is exactly 6/8 hex chars */
+        int is_hex = 0;
+        if (tok[0] == '#') {
+            is_hex = 1;
+        } else if (tlen == 6 || tlen == 8) {
+            is_hex = 1;
+            for (size_t i = 0; i < tlen; i++) {
+                if (!isxdigit((unsigned char)tok[i])) { is_hex = 0; break; }
+            }
+        }
+
+        if (is_hex) {
+            char *formatted = axctl_hyprland_color(tok);
+            if (color_count > 0) axctl_str_append(&colors, " ");
+            axctl_str_append(&colors, formatted);
+            free(formatted);
+            color_count++;
+        }
+        /* else: unknown token, skip (matches Go behaviour) */
+
+        tok = strtok_r(NULL, " \t", &saveptr);
+    }
+
+    free(buf);
+
+    if (color_count > 0) {
+        *out_colors = colors;
+    } else {
+        free(colors);
+    }
+    *out_angle = angle;
+}

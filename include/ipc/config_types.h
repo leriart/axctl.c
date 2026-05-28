@@ -123,9 +123,19 @@ typedef struct {
 typedef struct {
     axctl_appearance_t appearance;
 
-    /* Keybinds */
+    /* Keybinds: Go has ConfigKeybinds { Ambxst, Custom }
+     * Ambxst keybinds have system + named binds (both are maps).
+     * We flatten everything into one array for the generator. */
     axctl_keybind_t *custom_keybinds;
     int custom_keybind_count;
+
+    /* Ambxst system keybinds (from keybinds.ambxst.system) */
+    axctl_keybind_t *ambxst_system_keybinds;
+    int ambxst_system_keybind_count;
+
+    /* Ambxst named binds (from keybinds.ambxst.* excluding "system") */
+    axctl_keybind_t *ambxst_binds;
+    int ambxst_bind_count;
 
     /* Window rules */
     axctl_window_rule_t *window_rules;

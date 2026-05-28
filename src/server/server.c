@@ -733,13 +733,13 @@ static json_object *dispatch_method(axctl_server_t *s, const char *method,
         rc = c->get_animations(c->priv, &result);
     }
     else if (strcmp(method, "Config.BindKey") == 0) {
-        rc = c->bind_key(c->priv, param_str(params, "mods"),
-                         param_str(params, "key"),
-                         param_str(params, "command"));
+        rc = c->bind_key(c->priv, param_str_safe(params, "mods"),
+                         param_str_safe(params, "key"),
+                         param_str_safe(params, "command"));
     }
     else if (strcmp(method, "Config.UnbindKey") == 0) {
-        rc = c->unbind_key(c->priv, param_str(params, "mods"),
-                           param_str(params, "key"));
+        rc = c->unbind_key(c->priv, param_str_safe(params, "mods"),
+                           param_str_safe(params, "key"));
     }
 
     /* ---- System methods ---- */

@@ -70,6 +70,10 @@ void axctl_config_universal_free(axctl_config_universal_t *cfg) {
     axctl_appearance_free(&cfg->appearance);
     for (int i = 0; i < cfg->custom_keybind_count; i++) axctl_keybind_free(&cfg->custom_keybinds[i]);
     free(cfg->custom_keybinds);
+    for (int i = 0; i < cfg->ambxst_system_keybind_count; i++) axctl_keybind_free(&cfg->ambxst_system_keybinds[i]);
+    free(cfg->ambxst_system_keybinds);
+    for (int i = 0; i < cfg->ambxst_bind_count; i++) axctl_keybind_free(&cfg->ambxst_binds[i]);
+    free(cfg->ambxst_binds);
     for (int i = 0; i < cfg->window_rule_count; i++) axctl_window_rule_free(&cfg->window_rules[i]);
     free(cfg->window_rules);
     for (int i = 0; i < cfg->layer_rule_count; i++) axctl_layer_rule_free(&cfg->layer_rules[i]);
@@ -177,6 +181,24 @@ static void parse_appearance(struct json_object *obj, axctl_appearance_t *app) {
     }
 }
 
+/* Parse a single keybind from a JSON object into an axctl_keybind_t */
+static void parse_keybind(struct json_object *kb, axctl_keybind_t *k) {
+    k->key = axctl_strdup(json_get_string(kb, "key"));
+    k->dispatcher = axctl_strdup(json_get_string(kb, "dispatcher"));
+    k->argument = axctl_strdup(json_get_string(kb, "argument"));
+    k->flags = axctl_strdup(json_get_string(kb, "flags"));
+    k->enabled = json_get_bool(kb, "enabled", true);
+    struct json_object *mods = json_get_array(kb, "modifiers");
+    if (mods) {
+        int mlen = json_object_array_length(mods);
+        k->modifiers = calloc(mlen + 1, sizeof(char *));
+        k->modifier_count = mlen;
+        for (int j = 0; j < mlen; j++)
+            k->modifiers[j] = axctl_strdup(json_object_get_string(
+                json_object_array_get_idx(mods, j)));
+    }
+}
+
 int axctl_config_universal_from_json(const char *json_str, axctl_config_universal_t *out) {
     memset(out, 0, sizeof(*out));
     struct json_object *root = json_tokener_parse(json_str);
@@ -185,10 +207,50 @@ int axctl_config_universal_from_json(const char *json_str, axctl_config_universa
     struct json_object *app_obj = json_get_object(root, "appearance");
     if (app_obj) parse_appearance(app_obj, &out->appearance);
 
-
-    /* Parse keybinds from JSON */
+    /* Parse keybinds from JSON.
+     * Go structure: { "keybinds": { "ambxst": { "system": { ... }, ... }, "custom": [...] } }
+     * "ambxst.system" is a map of name→Keybind (system keybinds).
+     * Other keys under "ambxst" (excluding "system") are also name→Keybind (named binds).
+     * "custom" is an array of Keybind objects. */
     struct json_object *kb_obj = json_get_object(root, "keybinds");
     if (kb_obj) {
+        /* Parse keybinds.ambxst */
+        struct json_object *ambxst_obj = json_get_object(kb_obj, "ambxst");
+        if (ambxst_obj) {
+            /* Parse keybinds.ambxst.system (map of name→Keybind) */
+            struct json_object *system_obj = json_get_object(ambxst_obj, "system");
+            if (system_obj) {
+                int sys_count = json_object_object_length(system_obj);
+                if (sys_count > 0) {
+                    out->ambxst_system_keybinds = calloc(sys_count, sizeof(axctl_keybind_t));
+                    json_object_object_foreach(system_obj, sys_key, sys_val) {
+                        (void)sys_key;
+                        if (json_object_get_type(sys_val) == json_type_object) {
+                            parse_keybind(sys_val,
+                                &out->ambxst_system_keybinds[out->ambxst_system_keybind_count++]);
+                        }
+                    }
+                }
+            }
+
+            /* Parse other keys under ambxst (excluding "system") as named binds */
+            int other_count = 0;
+            json_object_object_foreach(ambxst_obj, ak, av) {
+                if (strcmp(ak, "system") != 0 && json_object_get_type(av) == json_type_object)
+                    other_count++;
+            }
+            if (other_count > 0) {
+                out->ambxst_binds = calloc(other_count, sizeof(axctl_keybind_t));
+                json_object_object_foreach(ambxst_obj, bk, bv) {
+                    if (strcmp(bk, "system") != 0 && json_object_get_type(bv) == json_type_object) {
+                        parse_keybind(bv,
+                            &out->ambxst_binds[out->ambxst_bind_count++]);
+                    }
+                }
+            }
+        }
+
+        /* Parse keybinds.custom (array of Keybind) */
         struct json_object *kb_custom = json_get_array(kb_obj, "custom");
         if (kb_custom) {
             int count = json_object_array_length(kb_custom);
@@ -196,20 +258,7 @@ int axctl_config_universal_from_json(const char *json_str, axctl_config_universa
                 out->custom_keybinds = calloc(count, sizeof(axctl_keybind_t));
                 for (int i = 0; i < count; i++) {
                     struct json_object *kb = json_object_array_get_idx(kb_custom, i);
-                    axctl_keybind_t *k = &out->custom_keybinds[out->custom_keybind_count++];
-                    k->key = axctl_strdup(json_get_string(kb, "key"));
-                    k->dispatcher = axctl_strdup(json_get_string(kb, "dispatcher"));
-                    k->argument = axctl_strdup(json_get_string(kb, "argument"));
-                    k->flags = axctl_strdup(json_get_string(kb, "flags"));
-                    k->enabled = json_get_bool(kb, "enabled", true);
-                    struct json_object *mods = json_get_array(kb, "modifiers");
-                    if (mods) {
-                        int mlen = json_object_array_length(mods);
-                        k->modifiers = calloc(mlen + 1, sizeof(char *));
-                            k->modifier_count = mlen;
-                        for (int j = 0; j < mlen; j++)
-                            k->modifiers[j] = axctl_strdup(json_object_get_string(json_object_array_get_idx(mods, j)));
-                    }
+                    parse_keybind(kb, &out->custom_keybinds[out->custom_keybind_count++]);
                 }
             }
         }

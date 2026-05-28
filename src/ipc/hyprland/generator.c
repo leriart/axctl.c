@@ -42,16 +42,30 @@ char *hyprland_generate_appearance(const axctl_appearance_t *cfg)
         if (cfg->border->width)
             append_free(&out, axctl_sprintf("general:border_size = %d\n", cfg->border->width->value));
         if (cfg->border->active_color) {
-            char *c = axctl_hyprland_color(cfg->border->active_color);
-            char *line = axctl_sprintf("general:col.active_border = %s\n", c);
-            axctl_str_append(&out, line);
-            free(line); free(c);
+            char *colors = NULL, *angle = NULL;
+            axctl_parse_color_string(cfg->border->active_color, &colors, &angle);
+            if (colors) {
+                if (angle) {
+                    append_free(&out, axctl_sprintf("general:col.active_border = %s %s\n", colors, angle));
+                    free(angle);
+                } else {
+                    append_free(&out, axctl_sprintf("general:col.active_border = %s\n", colors));
+                }
+                free(colors);
+            }
         }
         if (cfg->border->inactive_color) {
-            char *c = axctl_hyprland_color(cfg->border->inactive_color);
-            char *line = axctl_sprintf("general:col.inactive_border = %s\n", c);
-            axctl_str_append(&out, line);
-            free(line); free(c);
+            char *colors = NULL, *angle = NULL;
+            axctl_parse_color_string(cfg->border->inactive_color, &colors, &angle);
+            if (colors) {
+                if (angle) {
+                    append_free(&out, axctl_sprintf("general:col.inactive_border = %s %s\n", colors, angle));
+                    free(angle);
+                } else {
+                    append_free(&out, axctl_sprintf("general:col.inactive_border = %s\n", colors));
+                }
+                free(colors);
+            }
         }
         if (cfg->border->rounding)
             append_free(&out, axctl_sprintf("decoration:rounding = %d\n", cfg->border->rounding->value));
@@ -81,10 +95,13 @@ char *hyprland_generate_appearance(const axctl_appearance_t *cfg)
         if (cfg->shadow->size)
             append_free(&out, axctl_sprintf("decoration:shadow:range = %d\n", cfg->shadow->size->value));
         if (cfg->shadow->color) {
-            char *c = axctl_hyprland_color(cfg->shadow->color);
-            char *line = axctl_sprintf("decoration:shadow:color = %s\n", c);
-            axctl_str_append(&out, line);
-            free(line); free(c);
+            char *colors = NULL, *angle = NULL;
+            axctl_parse_color_string(cfg->shadow->color, &colors, &angle);
+            if (colors) {
+                append_free(&out, axctl_sprintf("decoration:shadow:color = %s\n", colors));
+                free(colors);
+            }
+            free(angle); /* shadow doesn't use angle, but free if set */
         }
     }
 
@@ -243,6 +260,10 @@ char *hyprland_generate_startup(char **exec, int exec_count,
 
 /* ── Lua syntax generators (matching Go's generator_lua.go) ─────────── */
 
+/* Forward declarations for Lua helpers */
+static char *lua_quote(const char *s);
+static char *bind_flags_to_lua(const char *flags);
+
 /* Helper: convert dispatcher + argument to Lua action string.
  * Matches Go's dispatcherToLua() function. */
 static char *dispatcher_to_lua(const char *dispatcher, const char *arg) {
@@ -262,30 +283,49 @@ static char *dispatcher_to_lua(const char *dispatcher, const char *arg) {
         return axctl_strdup("hl.dsp.window.fullscreen()");
     }
     if (strcmp(dispatcher, "movefocus") == 0) {
-        return axctl_sprintf(
+        char *focus_arg = arg ? axctl_sprintf("focus %s", arg) : axctl_strdup("");
+        char *ql = lua_quote(focus_arg);
+        char *qr = lua_quote(arg ? arg : "");
+        char *result = axctl_sprintf(
             "function() if hl.get_active_workspace().tiled_layout == \"scrolling\" "
-            "then hl.dispatch(hl.dsp.layout(\"%s\")) "
-            "else hl.dispatch(hl.dsp.focus({ direction = \"%s\" })) end end",
-            arg ? axctl_sprintf("focus %s", arg) : "", arg ? arg : "");
+            "then hl.dispatch(hl.dsp.layout(%s)) "
+            "else hl.dispatch(hl.dsp.focus({ direction = %s })) end end",
+            ql, qr);
+        free(focus_arg); free(ql); free(qr);
+        return result;
     }
     if (strcmp(dispatcher, "movewindow") == 0) {
         if (!arg || !*arg)
             return axctl_strdup("hl.dsp.window.drag()");
-        return axctl_sprintf("hl.dsp.window.move({ direction = \"%s\" })", arg);
+        char *q = lua_quote(arg);
+        char *r = axctl_sprintf("hl.dsp.window.move({ direction = %s })", q);
+        free(q); return r;
     }
     if (strcmp(dispatcher, "resizewindow") == 0) {
         if (!arg || !*arg)
             return axctl_strdup("hl.dsp.window.resize()");
         return axctl_sprintf("hl.dsp.window.resize({ %s })", arg);
     }
-    if (strcmp(dispatcher, "movetoworkspace") == 0)
-        return axctl_sprintf("hl.dsp.window.move({ workspace = \"%s\" })", arg ? arg : "");
-    if (strcmp(dispatcher, "movetoworkspacesilent") == 0)
-        return axctl_sprintf("hl.dsp.window.move({ workspace = \"%s\" })", arg ? arg : "");
-    if (strcmp(dispatcher, "workspace") == 0)
-        return axctl_sprintf("hl.dsp.focus({ workspace = \"%s\" })", arg ? arg : "");
-    if (strcmp(dispatcher, "togglespecialworkspace") == 0)
-        return axctl_sprintf("hl.dsp.workspace.toggle_special(\"%s\")", arg ? arg : "");
+    if (strcmp(dispatcher, "movetoworkspace") == 0) {
+        char *q = lua_quote(arg ? arg : "");
+        char *r = axctl_sprintf("hl.dsp.window.move({ workspace = %s })", q);
+        free(q); return r;
+    }
+    if (strcmp(dispatcher, "movetoworkspacesilent") == 0) {
+        char *q = lua_quote(arg ? arg : "");
+        char *r = axctl_sprintf("hl.dsp.window.move({ workspace = %s })", q);
+        free(q); return r;
+    }
+    if (strcmp(dispatcher, "workspace") == 0) {
+        char *q = lua_quote(arg ? arg : "");
+        char *r = axctl_sprintf("hl.dsp.focus({ workspace = %s })", q);
+        free(q); return r;
+    }
+    if (strcmp(dispatcher, "togglespecialworkspace") == 0) {
+        char *q = lua_quote(arg ? arg : "");
+        char *r = axctl_sprintf("hl.dsp.workspace.toggle_special(%s)", q);
+        free(q); return r;
+    }
     if (strcmp(dispatcher, "pin") == 0)
         return axctl_strdup("hl.dsp.window.pin({ action = \"toggle\" })");
     if (strcmp(dispatcher, "togglegroup") == 0)
@@ -296,13 +336,23 @@ static char *dispatcher_to_lua(const char *dispatcher, const char *arg) {
             dir = "prev";
         return axctl_sprintf("hl.dsp.group.%s()", dir);
     }
-    if (strcmp(dispatcher, "focuswindow") == 0)
-        return axctl_sprintf("hl.dsp.focus({ window = \"%s\" })", arg ? arg : "");
-    if (strcmp(dispatcher, "closewindow") == 0)
-        return axctl_sprintf("hl.dsp.window.close(\"%s\")", arg ? arg : "");
-    if (strcmp(dispatcher, "dpms") == 0)
-        return axctl_sprintf("hl.dsp.dpms({ action = \"%s\" })", arg ? arg : "");
+    if (strcmp(dispatcher, "focuswindow") == 0) {
+        char *q = lua_quote(arg ? arg : "");
+        char *r = axctl_sprintf("hl.dsp.focus({ window = %s })", q);
+        free(q); return r;
+    }
+    if (strcmp(dispatcher, "closewindow") == 0) {
+        char *q = lua_quote(arg ? arg : "");
+        char *r = axctl_sprintf("hl.dsp.window.close(%s)", q);
+        free(q); return r;
+    }
+    if (strcmp(dispatcher, "dpms") == 0) {
+        char *q = lua_quote(arg ? arg : "");
+        char *r = axctl_sprintf("hl.dsp.dpms({ action = %s })", q);
+        free(q); return r;
+    }
     if (strcmp(dispatcher, "layoutmsg") == 0) {
+        char *q = lua_quote(arg ? arg : "");
         /* Check for scrolling layout messages */
         if (arg && (strncmp(arg, "focus ", 6) == 0 ||
                     strncmp(arg, "movewindowto ", 13) == 0 ||
@@ -311,17 +361,20 @@ static char *dispatcher_to_lua(const char *dispatcher, const char *arg) {
                     strncmp(arg, "togglefit", 9) == 0 ||
                     strncmp(arg, "swapcol ", 8) == 0 ||
                     strncmp(arg, "movecoltoworkspace", 18) == 0)) {
-            return axctl_sprintf(
+            char *r = axctl_sprintf(
                 "function() if hl.get_active_workspace().tiled_layout == \"scrolling\" "
-                "then hl.dispatch(hl.dsp.layout(\"%s\")) end end", arg);
+                "then hl.dispatch(hl.dsp.layout(%s)) end end", q);
+            free(q); return r;
         }
         /* Check for dwindle layout messages */
         if (arg && (strcmp(arg, "rotatesplit") == 0 || strcmp(arg, "togglesplit") == 0)) {
-            return axctl_sprintf(
+            char *r = axctl_sprintf(
                 "function() if hl.get_active_workspace().tiled_layout == \"dwindle\" "
-                "then hl.dispatch(hl.dsp.layout(\"%s\")) end end", arg);
+                "then hl.dispatch(hl.dsp.layout(%s)) end end", q);
+            free(q); return r;
         }
-        return axctl_sprintf("hl.dsp.layout(\"%s\")", arg ? arg : "");
+        char *r = axctl_sprintf("hl.dsp.layout(%s)", q);
+        free(q); return r;
     }
     if (strcmp(dispatcher, "resizewindowpixel") == 0)
         return axctl_sprintf("hl.dsp.window.resize({ %s })", arg ? arg : "");
@@ -332,10 +385,18 @@ static char *dispatcher_to_lua(const char *dispatcher, const char *arg) {
     if (strcmp(dispatcher, "centerwindow") == 0)
         return axctl_strdup("hl.dsp.window.center()");
 
-    /* Default: exec */
-    if (arg && *arg)
-        return axctl_sprintf("hl.dsp.exec_cmd(\"%s %s\")", dispatcher, arg);
-    return axctl_sprintf("hl.dsp.exec_cmd(\"%s\")", dispatcher);
+    /* Default: exec — use lua_quote for proper escaping (matches Go's %q) */
+    if (arg && *arg) {
+        char *cmd = axctl_sprintf("%s %s", dispatcher, arg);
+        char *q = lua_quote(cmd);
+        char *r = axctl_sprintf("hl.dsp.exec_cmd(%s)", q);
+        free(cmd); free(q); return r;
+    }
+    {
+        char *q = lua_quote(dispatcher);
+        char *r = axctl_sprintf("hl.dsp.exec_cmd(%s)", q);
+        free(q); return r;
+    }
 }
 
 /* Helper: convert bind flags string to Lua table fields.
@@ -405,14 +466,54 @@ char *hyprland_generate_appearance_lua(const axctl_appearance_t *cfg)
             if (cfg->border->active_color || cfg->border->inactive_color) {
                 axctl_str_append(&out, "        col = {\n");
                 if (cfg->border->active_color) {
-                    char *c = axctl_hyprland_color(cfg->border->active_color);
-                    append_free(&out, axctl_sprintf("            active_border = \"%s\",\n", c));
-                    free(c);
+                    char *colors = NULL, *angle = NULL;
+                    axctl_parse_color_string(cfg->border->active_color, &colors, &angle);
+                    if (colors) {
+                        if (angle) {
+                            /* Gradient: { colors = {"rgba(..)", "rgba(..)"}, angle = N }
+                             * Match Go's Lua generator format. */
+                            char *angle_num = axctl_strdup(angle);
+                            size_t alen = strlen(angle_num);
+                            if (alen > 3 && strcmp(angle_num + alen - 3, "deg") == 0)
+                                angle_num[alen - 3] = '\0';
+
+                            /* Build quoted color list */
+                            char *color_list = axctl_strdup("");
+                            char *cbuf = axctl_strdup(colors);
+                            char *sp = NULL;
+                            char *ctok = strtok_r(cbuf, " ", &sp);
+                            int ci = 0;
+                            while (ctok) {
+                                if (ci > 0) axctl_str_append(&color_list, ", ");
+                                char *q = axctl_sprintf("\"%s\"", ctok);
+                                axctl_str_append(&color_list, q);
+                                free(q);
+                                ci++;
+                                ctok = strtok_r(NULL, " ", &sp);
+                            }
+                            free(cbuf);
+                            append_free(&out, axctl_sprintf(
+                                "            active_border = { colors = {%s}, angle = %s },\n",
+                                color_list, angle_num));
+                            free(color_list);
+                            free(angle_num);
+                            free(angle);
+                        } else {
+                            append_free(&out, axctl_sprintf(
+                                "            active_border = \"%s\",\n", colors));
+                        }
+                        free(colors);
+                    }
                 }
                 if (cfg->border->inactive_color) {
-                    char *c = axctl_hyprland_color(cfg->border->inactive_color);
-                    append_free(&out, axctl_sprintf("            inactive_border = \"%s\",\n", c));
-                    free(c);
+                    char *colors = NULL, *angle = NULL;
+                    axctl_parse_color_string(cfg->border->inactive_color, &colors, &angle);
+                    if (colors) {
+                        append_free(&out, axctl_sprintf(
+                            "            inactive_border = \"%s\",\n", colors));
+                        free(colors);
+                    }
+                    free(angle); /* inactive doesn't use angle in Go */
                 }
                 axctl_str_append(&out, "        },\n");
             }
@@ -441,9 +542,13 @@ char *hyprland_generate_appearance_lua(const axctl_appearance_t *cfg)
             if (cfg->shadow->size)
                 append_free(&out, axctl_sprintf("            range = %d,\n", cfg->shadow->size->value));
             if (cfg->shadow->color) {
-                char *c = axctl_hyprland_color(cfg->shadow->color);
-                append_free(&out, axctl_sprintf("            color = \"%s\",\n", c));
-                free(c);
+                char *colors = NULL, *angle = NULL;
+                axctl_parse_color_string(cfg->shadow->color, &colors, &angle);
+                if (colors) {
+                    append_free(&out, axctl_sprintf("            color = \"%s\",\n", colors));
+                    free(colors);
+                }
+                free(angle);
             }
             axctl_str_append(&out, "        },\n");
         }
