@@ -305,6 +305,25 @@ static void event_callback(const axctl_event_t *event, void *userdata)
                         event->payload ? json_object_get(event->payload) : NULL);
         break;
 
+    case EVENT_FLOATING_CHANGED: {
+        /* Update floating state in cache (matches Go behavior) */
+        const char *fid = NULL;
+        int floating = 0;
+        if (event->payload) {
+            json_object *jaddr = NULL, *jfloat = NULL;
+            if (json_object_object_get_ex(event->payload, "address", &jaddr) ||
+                json_object_object_get_ex(event->payload, "id", &jaddr))
+                fid = json_object_get_string(jaddr);
+            if (json_object_object_get_ex(event->payload, "floating", &jfloat))
+                floating = json_object_get_boolean(jfloat);
+        }
+        if (fid)
+            axctl_cache_update_window_floating(s->cache, fid, floating);
+        broadcast_event(s, "Event.FloatingChanged",
+                        event->payload ? json_object_get(event->payload) : NULL);
+        break;
+    }
+
     default:
         server_init_cache(s);
         broadcast_event(s, "Event.CacheRefreshed", NULL);
@@ -375,6 +394,13 @@ static const char *param_str(json_object *params, const char *key)
     return json_object_get_string(val);
 }
 
+/* Safe version that returns "" instead of NULL for use in printf/sprintf */
+static const char *param_str_safe(json_object *params, const char *key)
+{
+    const char *s = param_str(params, key);
+    return s ? s : "";
+}
+
 static int param_int(json_object *params, const char *key, int def)
 {
     json_object *val = NULL;
@@ -421,7 +447,7 @@ static json_object *dispatch_method(axctl_server_t *s, const char *method,
         rc = c->focus_window(c->priv, param_str(params, "id"));
     }
     else if (strcmp(method, "Window.FocusDir") == 0) {
-        rc = c->focus_dir(c->priv, param_str(params, "direction"));
+        rc = c->focus_dir(c->priv, param_str_safe(params, "direction"));
     }
     else if (strcmp(method, "Window.Close") == 0) {
         char *id = resolve_id(s, param_str(params, "id"));
@@ -430,7 +456,7 @@ static json_object *dispatch_method(axctl_server_t *s, const char *method,
     }
     else if (strcmp(method, "Window.Move") == 0) {
         char *id = resolve_id(s, param_str(params, "id"));
-        rc = c->move_window(c->priv, id, param_str(params, "direction"));
+        rc = c->move_window(c->priv, id, param_str_safe(params, "direction"));
         free(id);
     }
     else if (strcmp(method, "Window.Resize") == 0) {
@@ -466,7 +492,7 @@ static json_object *dispatch_method(axctl_server_t *s, const char *method,
         free(id);
     }
     else if (strcmp(method, "Window.GroupNav") == 0) {
-        rc = c->group_nav(c->priv, param_str(params, "direction"));
+        rc = c->group_nav(c->priv, param_str_safe(params, "direction"));
     }
     else if (strcmp(method, "Window.LayoutProp") == 0) {
         char *id = resolve_id(s, param_str(params, "id"));

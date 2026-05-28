@@ -158,9 +158,14 @@ struct json_object *axctl_window_to_json(const axctl_window_t *w) {
     json_object_object_add(obj, "is_floating", json_object_new_boolean(w->is_floating));
     json_object_object_add(obj, "is_fullscreen", json_object_new_boolean(w->is_fullscreen));
     json_object_object_add(obj, "is_hidden", json_object_new_boolean(w->is_hidden));
+
+    /* Always include metadata — QML clients expect it even if empty */
     if (w->metadata) {
         json_object_object_add(obj, "metadata", json_object_get(w->metadata));
+    } else {
+        json_object_object_add(obj, "metadata", json_object_new_object());
     }
+
     return obj;
 }
 
@@ -171,9 +176,27 @@ struct json_object *axctl_workspace_to_json(const axctl_workspace_t *w) {
     json_object_object_add(obj, "monitor_id", json_object_new_string(w->monitor_id ? w->monitor_id : ""));
     json_object_object_add(obj, "is_active", json_object_new_boolean(w->is_active));
     json_object_object_add(obj, "is_empty", json_object_new_boolean(w->is_empty));
+
+    /* Always include metadata with at least a "focused" field.
+     * The Go original always serialises metadata.focused; QML clients
+     * (Ambxst) crash with TypeError if the field is missing. */
     if (w->metadata) {
-        json_object_object_add(obj, "metadata", json_object_get(w->metadata));
+        /* If the backend set metadata but forgot "focused", add it */
+        struct json_object *meta = json_object_get(w->metadata);
+        json_object *existing = NULL;
+        if (!json_object_object_get_ex(meta, "focused", &existing)) {
+            json_object_object_add(meta, "focused",
+                                   json_object_new_boolean(w->is_active));
+        }
+        json_object_object_add(obj, "metadata", meta);
+    } else {
+        /* No metadata at all — create minimal {focused: is_active} */
+        struct json_object *meta = json_object_new_object();
+        json_object_object_add(meta, "focused",
+                               json_object_new_boolean(w->is_active));
+        json_object_object_add(obj, "metadata", meta);
     }
+
     return obj;
 }
 
@@ -188,9 +211,14 @@ struct json_object *axctl_monitor_to_json(const axctl_monitor_t *m) {
     json_object_object_add(obj, "refresh_rate", json_object_new_double(m->refresh_rate));
     json_object_object_add(obj, "scale", json_object_new_double(m->scale));
     json_object_object_add(obj, "is_focused", json_object_new_boolean(m->is_focused));
+
+    /* Always include metadata — QML clients expect it even if empty */
     if (m->metadata) {
         json_object_object_add(obj, "metadata", json_object_get(m->metadata));
+    } else {
+        json_object_object_add(obj, "metadata", json_object_new_object());
     }
+
     return obj;
 }
 

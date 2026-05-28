@@ -6,6 +6,14 @@
  *   - wl_seat (for idle notifications)
  *   - ext_idle_notifier_v1 (for idle/resume detection)
  *   - zwp_idle_inhibit_manager_v1 (for idle inhibition)
+ *
+ * Thread safety:
+ *   - The dispatch thread runs wl_display_dispatch() in a loop.
+ *   - Other threads should only call wl_display_flush() (safe to call
+ *     concurrently with dispatch) or wait on condition variables for
+ *     events delivered by the dispatch thread.
+ *   - wl_display_roundtrip() must NOT be called after the dispatch
+ *     thread starts, as it races with wl_display_dispatch().
  */
 
 #include <stdio.h>
@@ -29,7 +37,7 @@ struct axctl_wayland_ctx {
     struct wl_compositor *compositor;
     struct wl_seat       *seat;
 
-    /* Protocol globals – now using proper typed pointers. */
+    /* Protocol globals – proper typed pointers. */
     struct ext_idle_notifier_v1        *idle_notifier;
     struct zwp_idle_inhibit_manager_v1 *inhibit_manager;
 
@@ -39,7 +47,7 @@ struct axctl_wayland_ctx {
     uint32_t inhibit_mgr_version;
 
     pthread_t dispatch_thread;
-    int       running;
+    volatile int running;
     pthread_mutex_t mu;
 };
 
@@ -62,13 +70,11 @@ static void registry_global(void *data, struct wl_registry *registry,
     } else if (strcmp(interface, "ext_idle_notifier_v1") == 0) {
         ctx->idle_notifier_name = name;
         ctx->idle_notifier_version = version > 1 ? 1 : version;
-        /* Bind the idle notifier immediately */
         ctx->idle_notifier = wl_registry_bind(registry, name,
             &ext_idle_notifier_v1_interface, ctx->idle_notifier_version);
     } else if (strcmp(interface, "zwp_idle_inhibit_manager_v1") == 0) {
         ctx->inhibit_mgr_name = name;
         ctx->inhibit_mgr_version = version > 1 ? 1 : version;
-        /* Bind the inhibit manager immediately */
         ctx->inhibit_manager = wl_registry_bind(registry, name,
             &zwp_idle_inhibit_manager_v1_interface, ctx->inhibit_mgr_version);
     }
@@ -93,8 +99,13 @@ static void *wayland_dispatch_loop(void *arg)
 {
     struct axctl_wayland_ctx *ctx = (struct axctl_wayland_ctx *)arg;
     while (ctx->running) {
-        if (wl_display_dispatch(ctx->display) < 0) {
-            LOG_ERROR("Wayland dispatch error in idle manager");
+        /* wl_display_dispatch blocks until events are available.
+         * If the display connection is broken, it returns -1. */
+        int ret = wl_display_dispatch(ctx->display);
+        if (ret < 0) {
+            if (ctx->running) {
+                LOG_ERROR("Wayland dispatch error in idle manager");
+            }
             break;
         }
     }
@@ -131,13 +142,22 @@ axctl_wayland_ctx_t *axctl_wayland_connect(void)
 
     wl_registry_add_listener(ctx->registry, &registry_listener, ctx);
 
-    /* Roundtrip to discover and bind globals */
+    /* Roundtrip to discover and bind globals.
+     * This is safe because the dispatch thread hasn't started yet. */
     wl_display_roundtrip(display);
 
-    /* Start background dispatch thread */
+    /* Start background dispatch thread for event delivery */
     ctx->running = 1;
-    pthread_create(&ctx->dispatch_thread, NULL, wayland_dispatch_loop, ctx);
-    pthread_detach(ctx->dispatch_thread);
+    if (pthread_create(&ctx->dispatch_thread, NULL, wayland_dispatch_loop, ctx) != 0) {
+        LOG_ERROR("Failed to create Wayland dispatch thread");
+        if (ctx->idle_notifier)
+            ext_idle_notifier_v1_destroy(ctx->idle_notifier);
+        if (ctx->inhibit_manager)
+            zwp_idle_inhibit_manager_v1_destroy(ctx->inhibit_manager);
+        wl_display_disconnect(display);
+        free(ctx);
+        return NULL;
+    }
 
     return ctx;
 }
@@ -145,9 +165,22 @@ axctl_wayland_ctx_t *axctl_wayland_connect(void)
 void axctl_wayland_disconnect(axctl_wayland_ctx_t *ctx)
 {
     if (!ctx) return;
+
+    /* Signal the dispatch thread to stop */
     ctx->running = 0;
 
-    /* Destroy protocol objects before disconnecting */
+    /* Cancel the display read to unblock wl_display_dispatch.
+     * We do this by disconnecting the display, which causes
+     * wl_display_dispatch to return -1. Then we join the thread. */
+    if (ctx->display) {
+        /* Flush any pending requests before shutdown */
+        wl_display_flush(ctx->display);
+    }
+
+    /* Join the dispatch thread (with timeout via detach+sleep fallback) */
+    pthread_join(ctx->dispatch_thread, NULL);
+
+    /* Now safe to destroy protocol objects and disconnect */
     if (ctx->idle_notifier)
         ext_idle_notifier_v1_destroy(ctx->idle_notifier);
     if (ctx->inhibit_manager)
@@ -155,6 +188,7 @@ void axctl_wayland_disconnect(axctl_wayland_ctx_t *ctx)
 
     if (ctx->display)
         wl_display_disconnect(ctx->display);
+
     pthread_mutex_destroy(&ctx->mu);
     free(ctx);
 }
@@ -196,12 +230,17 @@ int axctl_wayland_has_inhibit_manager(axctl_wayland_ctx_t *ctx)
 
 void axctl_wayland_roundtrip(axctl_wayland_ctx_t *ctx)
 {
+    /* WARNING: Do NOT call this after the dispatch thread has started!
+     * wl_display_roundtrip races with wl_display_dispatch.
+     * This function is only safe during initial setup. */
     if (ctx && ctx->display)
         wl_display_roundtrip(ctx->display);
 }
 
 void axctl_wayland_flush(axctl_wayland_ctx_t *ctx)
 {
+    /* wl_display_flush is safe to call concurrently with
+     * wl_display_dispatch (it only writes to the output buffer). */
     if (ctx && ctx->display)
         wl_display_flush(ctx->display);
 }

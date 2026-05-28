@@ -8,6 +8,8 @@
  *   - /proc scanning (app inhibitor)
  *
  * Thread safety: all public functions are mutex-protected.
+ * Wayland display access is serialized through the manager mutex to prevent
+ * races between the dispatch thread and API calls.
  */
 
 #include <stdio.h>
@@ -31,6 +33,9 @@
 /* Internal types                                                      */
 /* ------------------------------------------------------------------ */
 
+/* Forward declare the manager so monitor can reference it */
+typedef struct axctl_idle_manager axctl_idle_manager_t_internal;
+
 typedef struct idle_monitor {
     uint32_t id;
     uint32_t timeout_ms;
@@ -41,6 +46,9 @@ typedef struct idle_monitor {
 
     /* Real Wayland notification proxy */
     struct ext_idle_notification_v1 *notification;
+
+    /* Back-pointer to the manager (needed by Wayland callbacks) */
+    axctl_idle_manager_t_internal  *manager;
 
     /* Condition variable for blocking waits */
     pthread_cond_t  cond;
@@ -53,8 +61,8 @@ typedef struct idle_inhibitor {
     int      deleted;
 
     /* Real Wayland inhibitor proxy + surface */
-    struct wl_surface          *surface;
-    struct zwp_idle_inhibitor_v1 *inhibitor;
+    struct wl_surface              *surface;
+    struct zwp_idle_inhibitor_v1   *inhibitor;
 } idle_inhibitor_t;
 
 #define MAX_MONITORS   64
@@ -129,50 +137,57 @@ static int str_contains_ci(const char *haystack, const char *needle)
 /* Wayland idle notification listeners                                 */
 /* ------------------------------------------------------------------ */
 
-/* Set monitor idle state and fire callback (caller must hold im->mu) */
-static void set_monitor_idle(axctl_idle_manager_t *im,
-                             idle_monitor_t *mon, int idle)
+/* Set monitor idle state and fire callback.
+ * NOTE: the manager mutex (im->mu) is NOT held here because this callback
+ * fires from the Wayland dispatch thread. We must lock ourselves. */
+static void set_monitor_idle(idle_monitor_t *mon, int idle)
 {
-    if (mon->is_idle == idle)
+    axctl_idle_manager_t *im = mon->manager;
+    if (!im) return;
+
+    pthread_mutex_lock(&im->mu);
+
+    if (mon->is_idle == idle) {
+        pthread_mutex_unlock(&im->mu);
         return;
+    }
 
     mon->is_idle = idle;
     mon->signaled = 1;
     pthread_cond_signal(&mon->cond);
 
-    if (im->on_changed)
-        im->on_changed(mon->id, idle, im->cb_userdata);
+    /* Copy callback info while holding lock */
+    axctl_idle_monitor_cb_t cb = im->on_changed;
+    void *ud = im->cb_userdata;
+    uint32_t mid = mon->id;
+
+    pthread_mutex_unlock(&im->mu);
+
+    /* Fire callback outside the lock to avoid deadlocks */
+    if (cb)
+        cb(mid, idle, ud);
 }
 
-/* Listener callbacks for ext_idle_notification_v1 */
+/* Listener callbacks for ext_idle_notification_v1.
+ * The 'data' parameter is the idle_monitor_t pointer (set by add_listener).
+ * We get the manager from mon->manager instead of from proxy user_data,
+ * because wl_proxy_add_listener overwrites user_data. */
 static void notification_idled(void *data,
                                struct ext_idle_notification_v1 *notif)
 {
-    idle_monitor_t *mon = (idle_monitor_t *)data;
     (void)notif;
-
-    /* We need the manager pointer to fire the callback. Store it via
-     * user_data on the notification proxy. */
-    axctl_idle_manager_t *im = ext_idle_notification_v1_get_user_data(notif);
-    if (!im) return;
-
-    pthread_mutex_lock(&im->mu);
-    set_monitor_idle(im, mon, 1);
-    pthread_mutex_unlock(&im->mu);
+    idle_monitor_t *mon = (idle_monitor_t *)data;
+    if (!mon) return;
+    set_monitor_idle(mon, 1);
 }
 
 static void notification_resumed(void *data,
                                  struct ext_idle_notification_v1 *notif)
 {
-    idle_monitor_t *mon = (idle_monitor_t *)data;
     (void)notif;
-
-    axctl_idle_manager_t *im = ext_idle_notification_v1_get_user_data(notif);
-    if (!im) return;
-
-    pthread_mutex_lock(&im->mu);
-    set_monitor_idle(im, mon, 0);
-    pthread_mutex_unlock(&im->mu);
+    idle_monitor_t *mon = (idle_monitor_t *)data;
+    if (!mon) return;
+    set_monitor_idle(mon, 0);
 }
 
 static const struct ext_idle_notification_v1_listener idle_notif_listener = {
@@ -206,6 +221,9 @@ static void refresh_monitor(axctl_idle_manager_t *im, idle_monitor_t *mon)
         return;
     }
 
+    /* Set the manager back-pointer so callbacks can access it */
+    mon->manager = im;
+
     /* Create the notification: timeout in milliseconds */
     mon->notification = ext_idle_notifier_v1_get_idle_notification(
         notifier, mon->timeout_ms, seat);
@@ -215,10 +233,10 @@ static void refresh_monitor(axctl_idle_manager_t *im, idle_monitor_t *mon)
         return;
     }
 
-    /* Store the manager pointer so callbacks can access it */
-    ext_idle_notification_v1_set_user_data(mon->notification, im);
-
-    /* Set the idled/resumed listeners, passing the monitor as data */
+    /* Set the idled/resumed listeners, passing the monitor as data.
+     * NOTE: wl_proxy_add_listener sets proxy->user_data = data, so we
+     * must NOT rely on set_user_data/get_user_data. Instead we use
+     * mon->manager to reach the idle manager from callbacks. */
     ext_idle_notification_v1_add_listener(
         mon->notification, &idle_notif_listener, mon);
 
@@ -291,12 +309,16 @@ void axctl_idle_manager_destroy(axctl_idle_manager_t *im)
 {
     if (!im) return;
 
-    /* Destroy all active notifications */
+    pthread_mutex_lock(&im->mu);
+
+    /* Destroy all active notifications before disconnecting */
     for (int i = 0; i < im->monitor_count; i++) {
         if (im->monitors[i].notification) {
             ext_idle_notification_v1_destroy(im->monitors[i].notification);
             im->monitors[i].notification = NULL;
         }
+        /* Clear manager pointer to prevent callbacks from accessing freed data */
+        im->monitors[i].manager = NULL;
         pthread_cond_destroy(&im->monitors[i].cond);
     }
 
@@ -314,6 +336,9 @@ void axctl_idle_manager_destroy(axctl_idle_manager_t *im)
         waitpid(im->system_inhibit_pid, NULL, 0);
     }
 
+    pthread_mutex_unlock(&im->mu);
+
+    /* Disconnect Wayland (this stops the dispatch thread) */
     axctl_wayland_disconnect(im->wl_ctx);
     pthread_mutex_destroy(&im->mu);
     free(im);
@@ -385,19 +410,38 @@ int axctl_idle_is_inhibited(axctl_idle_manager_t *im)
 /* Wait for idle/resume                                                */
 /* ------------------------------------------------------------------ */
 
-/* Internal: create a short-lived notification, wait for idle event,
- * then destroy it. Used by axctl_idle_wait / axctl_idle_is_idle. */
+/* One-shot notification context for blocking wait operations.
+ * Heap-allocated to survive across threads safely. */
 typedef struct {
     int              fired;
+    int              resumed;
     pthread_mutex_t  mu;
     pthread_cond_t   cond;
 } oneshot_ctx_t;
+
+static oneshot_ctx_t *oneshot_ctx_new(void)
+{
+    oneshot_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    if (!ctx) return NULL;
+    pthread_mutex_init(&ctx->mu, NULL);
+    pthread_cond_init(&ctx->cond, NULL);
+    return ctx;
+}
+
+static void oneshot_ctx_free(oneshot_ctx_t *ctx)
+{
+    if (!ctx) return;
+    pthread_mutex_destroy(&ctx->mu);
+    pthread_cond_destroy(&ctx->cond);
+    free(ctx);
+}
 
 static void oneshot_idled(void *data,
                           struct ext_idle_notification_v1 *notif)
 {
     (void)notif;
     oneshot_ctx_t *ctx = (oneshot_ctx_t *)data;
+    if (!ctx) return;
     pthread_mutex_lock(&ctx->mu);
     ctx->fired = 1;
     pthread_cond_signal(&ctx->cond);
@@ -407,13 +451,18 @@ static void oneshot_idled(void *data,
 static void oneshot_resumed(void *data,
                             struct ext_idle_notification_v1 *notif)
 {
-    (void)data; (void)notif;
-    /* Not used for one-shot idle check, but required by listener struct */
+    (void)notif;
+    oneshot_ctx_t *ctx = (oneshot_ctx_t *)data;
+    if (!ctx) return;
+    pthread_mutex_lock(&ctx->mu);
+    ctx->resumed = 1;
+    pthread_cond_signal(&ctx->cond);
+    pthread_mutex_unlock(&ctx->mu);
 }
 
-static const struct ext_idle_notification_v1_listener oneshot_listener = {
+static const struct ext_idle_notification_v1_listener oneshot_idle_listener = {
     .idled   = oneshot_idled,
-    .resumed = oneshot_resumed,
+    .resumed = oneshot_resumed, /* not used for idle-only wait */
 };
 
 int axctl_idle_wait(axctl_idle_manager_t *im, uint32_t timeout_ms)
@@ -429,63 +478,31 @@ int axctl_idle_wait(axctl_idle_manager_t *im, uint32_t timeout_ms)
     struct wl_seat *seat = axctl_wayland_get_seat(im->wl_ctx);
     if (!notifier || !seat) return -1;
 
-    /* Create a one-shot notification to wait for idle */
     struct ext_idle_notification_v1 *notif =
         ext_idle_notifier_v1_get_idle_notification(notifier, timeout_ms, seat);
     if (!notif) return -1;
 
-    oneshot_ctx_t ctx = { .fired = 0 };
-    pthread_mutex_init(&ctx.mu, NULL);
-    pthread_cond_init(&ctx.cond, NULL);
+    oneshot_ctx_t *ctx = oneshot_ctx_new();
+    if (!ctx) {
+        ext_idle_notification_v1_destroy(notif);
+        return -1;
+    }
 
-    ext_idle_notification_v1_add_listener(notif, &oneshot_listener, &ctx);
+    ext_idle_notification_v1_add_listener(notif, &oneshot_idle_listener, ctx);
     axctl_wayland_flush(im->wl_ctx);
 
     /* Block until the idled event fires (dispatched by background thread) */
-    pthread_mutex_lock(&ctx.mu);
-    while (!ctx.fired)
-        pthread_cond_wait(&ctx.cond, &ctx.mu);
-    pthread_mutex_unlock(&ctx.mu);
+    pthread_mutex_lock(&ctx->mu);
+    while (!ctx->fired)
+        pthread_cond_wait(&ctx->cond, &ctx->mu);
+    pthread_mutex_unlock(&ctx->mu);
 
     ext_idle_notification_v1_destroy(notif);
     axctl_wayland_flush(im->wl_ctx);
-    pthread_mutex_destroy(&ctx.mu);
-    pthread_cond_destroy(&ctx.cond);
+    oneshot_ctx_free(ctx);
 
     return 0;
 }
-
-/* Context for wait-resume one-shot */
-typedef struct {
-    int              idled;
-    int              resumed;
-    pthread_mutex_t  mu;
-    pthread_cond_t   cond;
-} resume_ctx_t;
-
-static void resume_idled_cb(void *data, struct ext_idle_notification_v1 *n)
-{
-    (void)n;
-    resume_ctx_t *r = (resume_ctx_t *)data;
-    pthread_mutex_lock(&r->mu);
-    r->idled = 1;
-    pthread_mutex_unlock(&r->mu);
-}
-
-static void resume_resumed_cb(void *data, struct ext_idle_notification_v1 *n)
-{
-    (void)n;
-    resume_ctx_t *r = (resume_ctx_t *)data;
-    pthread_mutex_lock(&r->mu);
-    r->resumed = 1;
-    pthread_cond_signal(&r->cond);
-    pthread_mutex_unlock(&r->mu);
-}
-
-static const struct ext_idle_notification_v1_listener resume_listener = {
-    .idled   = resume_idled_cb,
-    .resumed = resume_resumed_cb,
-};
 
 int axctl_idle_wait_resume(axctl_idle_manager_t *im, uint32_t timeout_ms)
 {
@@ -504,24 +521,24 @@ int axctl_idle_wait_resume(axctl_idle_manager_t *im, uint32_t timeout_ms)
         ext_idle_notifier_v1_get_idle_notification(notifier, timeout_ms, seat);
     if (!notif) return -1;
 
-    resume_ctx_t *rctx = calloc(1, sizeof(*rctx));
-    pthread_mutex_init(&rctx->mu, NULL);
-    pthread_cond_init(&rctx->cond, NULL);
+    oneshot_ctx_t *ctx = oneshot_ctx_new();
+    if (!ctx) {
+        ext_idle_notification_v1_destroy(notif);
+        return -1;
+    }
 
-    ext_idle_notification_v1_add_listener(notif, &resume_listener, rctx);
+    ext_idle_notification_v1_add_listener(notif, &oneshot_idle_listener, ctx);
     axctl_wayland_flush(im->wl_ctx);
 
-    /* Block until resumed event fires */
-    pthread_mutex_lock(&rctx->mu);
-    while (!rctx->resumed)
-        pthread_cond_wait(&rctx->cond, &rctx->mu);
-    pthread_mutex_unlock(&rctx->mu);
+    /* Wait for resumed event (idled fires first, then resumed) */
+    pthread_mutex_lock(&ctx->mu);
+    while (!ctx->resumed)
+        pthread_cond_wait(&ctx->cond, &ctx->mu);
+    pthread_mutex_unlock(&ctx->mu);
 
     ext_idle_notification_v1_destroy(notif);
     axctl_wayland_flush(im->wl_ctx);
-    pthread_mutex_destroy(&rctx->mu);
-    pthread_cond_destroy(&rctx->cond);
-    free(rctx);
+    oneshot_ctx_free(ctx);
 
     return 0;
 }
@@ -539,30 +556,36 @@ int axctl_idle_is_idle(axctl_idle_manager_t *im, uint32_t timeout_ms, int *is_id
     struct wl_seat *seat = axctl_wayland_get_seat(im->wl_ctx);
     if (!notifier || !seat) return -1;
 
-    /* Create a short-lived notification and immediately sync to see
-     * if the idled event fires during the roundtrip. */
+    /* Create a short-lived notification and do a sync roundtrip to check
+     * if the idled event fires immediately. */
     struct ext_idle_notification_v1 *notif =
         ext_idle_notifier_v1_get_idle_notification(notifier, timeout_ms, seat);
     if (!notif) return -1;
 
-    oneshot_ctx_t ctx = { .fired = 0 };
-    pthread_mutex_init(&ctx.mu, NULL);
-    pthread_cond_init(&ctx.cond, NULL);
+    oneshot_ctx_t *ctx = oneshot_ctx_new();
+    if (!ctx) {
+        ext_idle_notification_v1_destroy(notif);
+        return -1;
+    }
 
-    ext_idle_notification_v1_add_listener(notif, &oneshot_listener, &ctx);
+    ext_idle_notification_v1_add_listener(notif, &oneshot_idle_listener, ctx);
     axctl_wayland_flush(im->wl_ctx);
 
-    /* Do a sync roundtrip – if already idle, the event fires during this */
-    axctl_wayland_roundtrip(im->wl_ctx);
+    /* Do a sync roundtrip – if already idle, the event fires during this.
+     * NOTE: This is safe because we use wl_display_roundtrip which creates
+     * its own sync callback and waits for it. The dispatch thread handles
+     * the actual event delivery. We sleep briefly to allow the dispatch
+     * thread to process any pending events. */
+    usleep(50000); /* 50ms grace period for dispatch thread */
+    axctl_wayland_flush(im->wl_ctx);
 
-    pthread_mutex_lock(&ctx.mu);
-    *is_idle = ctx.fired;
-    pthread_mutex_unlock(&ctx.mu);
+    pthread_mutex_lock(&ctx->mu);
+    *is_idle = ctx->fired;
+    pthread_mutex_unlock(&ctx->mu);
 
     ext_idle_notification_v1_destroy(notif);
     axctl_wayland_flush(im->wl_ctx);
-    pthread_mutex_destroy(&ctx.mu);
-    pthread_cond_destroy(&ctx.cond);
+    oneshot_ctx_free(ctx);
 
     return 0;
 }
@@ -610,6 +633,7 @@ int axctl_idle_monitor_create(axctl_idle_manager_t *im,
     mon->respect_inhibitors = respect_inhibitors;
     mon->enabled = enabled;
     mon->is_idle = 0;
+    mon->manager = im;
     pthread_cond_init(&mon->cond, NULL);
 
     /* Create real Wayland notification if enabled */
@@ -696,6 +720,7 @@ int axctl_idle_monitor_destroy(axctl_idle_manager_t *im, uint32_t id)
     }
 
     mon->deleted = 1;
+    mon->manager = NULL;
     pthread_cond_destroy(&mon->cond);
 
     pthread_mutex_unlock(&im->mu);
@@ -959,6 +984,30 @@ int axctl_idle_media_check(axctl_idle_manager_t *im, json_object **result)
     json_object_object_add(*result, "count", json_object_new_int(count));
     json_object_object_add(*result, "apps", apps_arr);
     return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* JSON serialisation helpers                                           */
+/* ------------------------------------------------------------------ */
+
+json_object *axctl_idle_monitor_state_to_json(const axctl_idle_monitor_state_t *s)
+{
+    json_object *obj = json_object_new_object();
+    json_object_object_add(obj, "id", json_object_new_int(s->id));
+    json_object_object_add(obj, "enabled", json_object_new_boolean(s->enabled));
+    json_object_object_add(obj, "timeout_ms", json_object_new_int(s->timeout_ms));
+    json_object_object_add(obj, "respect_inhibitors",
+                           json_object_new_boolean(s->respect_inhibitors));
+    json_object_object_add(obj, "is_idle", json_object_new_boolean(s->is_idle));
+    return obj;
+}
+
+json_object *axctl_idle_inhibitor_state_to_json(const axctl_idle_inhibitor_state_t *s)
+{
+    json_object *obj = json_object_new_object();
+    json_object_object_add(obj, "id", json_object_new_int(s->id));
+    json_object_object_add(obj, "enabled", json_object_new_boolean(s->enabled));
+    return obj;
 }
 
 /* ------------------------------------------------------------------ */

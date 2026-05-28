@@ -329,32 +329,65 @@ static void run_subscribe(void)
     write(fd, "\n", 1);
     json_object_put(req);
 
-    /* Read events */
-    char buf[65536];
+    /* Read events using a proper line buffer.
+     * JSON messages can be large (especially State.Dump with many windows),
+     * so we must handle messages that span multiple read() calls.
+     * Each message is terminated by '\n'. */
+    size_t line_cap = 262144;  /* 256KB initial capacity */
+    char *line_buf = malloc(line_cap);
+    size_t line_len = 0;
+
+    if (!line_buf) {
+        fprintf(stderr, "Out of memory\n");
+        close(fd);
+        exit(1);
+    }
+
+    char read_buf[8192];
     while (1) {
-        ssize_t n = read(fd, buf, sizeof(buf) - 1);
+        ssize_t n = read(fd, read_buf, sizeof(read_buf));
         if (n <= 0) {
             fprintf(stderr, "Connection closed\n");
             break;
         }
-        buf[n] = 0;
 
-        /* Print lines that are JSON-RPC notifications */
-        char *line = strtok(buf, "\n");
-        while (line) {
-            json_object *msg = json_tokener_parse(line);
-            if (msg) {
-                json_object *jrpc = NULL;
-                if (json_object_object_get_ex(msg, "jsonrpc", &jrpc)) {
-                    printf("%s\n", json_object_to_json_string(msg));
-                    fflush(stdout);
+        /* Append to line buffer and process complete lines */
+        for (ssize_t i = 0; i < n; i++) {
+            if (read_buf[i] == '\n') {
+                /* Complete line: NUL-terminate and process */
+                line_buf[line_len] = '\0';
+
+                if (line_len > 0) {
+                    json_object *msg = json_tokener_parse(line_buf);
+                    if (msg) {
+                        json_object *jrpc = NULL;
+                        if (json_object_object_get_ex(msg, "jsonrpc", &jrpc)) {
+                            printf("%s\n", json_object_to_json_string(msg));
+                            fflush(stdout);
+                        }
+                        json_object_put(msg);
+                    }
                 }
-                json_object_put(msg);
+                line_len = 0;
+            } else {
+                /* Append character; grow buffer if needed */
+                if (line_len + 1 >= line_cap) {
+                    line_cap *= 2;
+                    char *new_buf = realloc(line_buf, line_cap);
+                    if (!new_buf) {
+                        fprintf(stderr, "Out of memory\n");
+                        free(line_buf);
+                        close(fd);
+                        exit(1);
+                    }
+                    line_buf = new_buf;
+                }
+                line_buf[line_len++] = read_buf[i];
             }
-            line = strtok(NULL, "\n");
         }
     }
 
+    free(line_buf);
     close(fd);
 }
 
