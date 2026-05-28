@@ -351,10 +351,12 @@ static int hypr_list_windows(void *priv, axctl_window_array_t *out) {
         win.is_fullscreen = json_get_bool(w, "fullscreen", false);
         win.is_hidden = json_get_bool(w, "hidden", false);
 
-        /* Metadata with extra Hyprland-specific fields */
+        /* Metadata with full Hyprland-specific fields */
         win.metadata = json_object_new_object();
         json_object_object_add(win.metadata, "monitor_id",
-            json_object_new_int(json_get_int(w, "monitor", -1)));
+            json_object_new_string(axctl_sprintf("%d", json_get_int(w, "monitor", -1))));
+        json_object_object_add(win.metadata, "pinned",
+            json_object_new_boolean(json_get_bool(w, "pinned", false)));
 
         struct json_object *at_arr = json_get_array(w, "at");
         if (at_arr && json_object_array_length(at_arr) >= 2) {
@@ -362,6 +364,14 @@ static int hypr_list_windows(void *priv, axctl_window_array_t *out) {
                 json_object_new_int(json_object_get_int(json_object_array_get_idx(at_arr, 0))));
             json_object_object_add(win.metadata, "y",
                 json_object_new_int(json_object_get_int(json_object_array_get_idx(at_arr, 1))));
+        }
+
+        struct json_object *size_arr = json_get_array(w, "size");
+        if (size_arr && json_object_array_length(size_arr) >= 2) {
+            json_object_object_add(win.metadata, "width",
+                json_object_new_int(json_object_get_int(json_object_array_get_idx(size_arr, 0))));
+            json_object_object_add(win.metadata, "height",
+                json_object_new_int(json_object_get_int(json_object_array_get_idx(size_arr, 1))));
         }
 
         axctl_window_array_push(out, win);
@@ -712,12 +722,20 @@ static int hypr_batch_keybinds(void *priv, const char *json_payload) {
             }
 
             char *part;
+            const char *bind_kw = "bind";
             if (flags && *flags) {
-                part = axctl_sprintf(";bind%s = %s, %s, %s, %s",
-                    flags, mods_str, key, dispatcher, argument ? argument : "");
+                bind_kw = flags; /* e.g. "m" -> bindm, "l" -> bindl, "r" -> bindr, etc. */
+            }
+
+            if (argument && *argument) {
+                part = axctl_sprintf(";%s = %s, %s, %s, %s",
+                    bind_kw, mods_str, key, dispatcher, argument);
             } else {
-                part = axctl_sprintf(";bind = %s, %s, %s, %s",
-                    mods_str, key, dispatcher, argument ? argument : "");
+                /* No argument: omit the trailing comma to match Hyprland's expectations.
+                 * For bindm (mouse binds) this means: ;bindm = mods, key, dispatcher
+                 * Go version does the same. */
+                part = axctl_sprintf(";%s = %s, %s, %s",
+                    bind_kw, mods_str, key, dispatcher);
             }
             axctl_str_append(&batch, part);
             free(part);
