@@ -779,6 +779,25 @@ static int hypr_list_monitors(void *priv, axctl_monitor_array_t *out) {
         mon.refresh_rate = json_get_double(m, "refreshRate", 0.0);
         mon.scale = json_get_double(m, "scale", 1.0);
         mon.is_focused = json_get_bool(m, "focused", false);
+
+        struct json_object *meta = json_object_new_object();
+        json_object_object_add(meta, "x", json_object_new_int(json_get_int(m, "x", 0)));
+        json_object_object_add(meta, "y", json_object_new_int(json_get_int(m, "y", 0)));
+        json_object_object_add(meta, "transform", json_object_new_int(json_get_int(m, "transform", 0)));
+        
+        struct json_object *aw = NULL;
+        if (json_object_object_get_ex(m, "activeWorkspace", &aw)) {
+            struct json_object *aw_name = NULL;
+            if (json_object_object_get_ex(aw, "name", &aw_name)) {
+                json_object_object_add(meta, "active_workspace", json_object_get(aw_name));
+            } else {
+                json_object_object_add(meta, "active_workspace", json_object_new_string(""));
+            }
+        } else {
+            json_object_object_add(meta, "active_workspace", json_object_new_string(""));
+        }
+        mon.metadata = meta;
+
         axctl_monitor_array_push(out, mon);
     }
 
