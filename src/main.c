@@ -640,45 +640,22 @@ static void handle_rpc(const char *category, int argc, char **argv)
     buf[n] = 0;
 
     /* The daemon sends a State.Dump notification on every new connection
-     * before the actual response. Parse through all JSON objects in the
-     * buffer to find the one with our request ID. */
+     * before the actual response. The last \n-delimited JSON object in
+     * the buffer is always the actual response (it has our request ID).
+     * Find it by locating the last \n and parsing from there. */
     json_object *resp = NULL;
-    const char *cursor = buf;
-    int found = 0;
-    struct json_tokener *tok = json_tokener_new();
-    while (!found && cursor && *cursor) {
-        resp = json_tokener_parse_ex(tok, cursor, (int)strlen(cursor));
-        if (tok->char_offset > 0)
-            cursor += tok->char_offset;
-        else
-            break;
-
-        if (resp) {
-            json_object *j_id = NULL;
-            /* Skip notifications (no id) — they're State.Dump preambles */
-            if (json_object_object_get_ex(resp, "id", &j_id)) {
-                found = 1;
-                break;
-            }
-            json_object_put(resp);
-            resp = NULL;
-        }
-        json_tokener_reset(tok);
+    const char *last_newline = strrchr(buf, '\n');
+    if (last_newline && last_newline > buf && *(last_newline - 1) == '}') {
+        /* Last chunk before final \n — the response */
+        resp = json_tokener_parse(last_newline + 1);
     }
-    json_tokener_free(tok);
-
-    if (!found || !resp) {
-        /* Fallback: try parsing the last JSON object in the buffer */
-        const char *last_newline = strrchr(buf, '\n');
-        if (last_newline && last_newline > buf) {
-            resp = json_tokener_parse(last_newline + 1);
-        }
-        if (!resp)
-            resp = json_tokener_parse(buf);
-        if (!resp) {
-            fprintf(stderr, "Invalid response from daemon\n");
-            return;
-        }
+    if (!resp) {
+        /* Fallback: parse the entire buffer (single-message response) */
+        resp = json_tokener_parse(buf);
+    }
+    if (!resp) {
+        fprintf(stderr, "Invalid response from daemon\n");
+        return;
     }
 
     json_object *j_err = NULL, *j_result = NULL;
