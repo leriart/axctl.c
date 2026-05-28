@@ -183,9 +183,12 @@ int axctl_config_handler_apply(axctl_compositor_t *comp,
     free(config_path);
     free(s_app); free(s_bind); free(s_rules); free(s_layers); free(s_startup);
 
-    /* Trigger compositor reload */
-    if (comp->reload_config)
-        return comp->reload_config(comp->priv);
+    /* Reload is SKIPPED — the config watcher auto-triggers this on TOML
+     * changes, but hyprctl reload would wipe ALL runtime keybinds
+     * applied by keybinds-batch. The QML calls axctl config reload
+     * explicitly when needed. */
+    // reload skipped: would wipe runtime keybinds from keybinds-batch
+    // QML handles explicit reloads via axctl config reload
 
     return AXCTL_OK;
 }
