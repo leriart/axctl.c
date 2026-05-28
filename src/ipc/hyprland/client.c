@@ -37,6 +37,46 @@ typedef struct {
     bool event_running;
 } hyprland_data_t;
 
+/* ── Helper functions (matching Go helpers) ─────────────────────────── */
+
+/* hyprTarget: returns "address:<id>" or "" if id is empty/NULL */
+static char *hypr_target(const char *id) {
+    if (!id || !*id) return axctl_strdup("");
+    return axctl_sprintf("address:%s", id);
+}
+
+/* luaTargetField: returns ', window = "address:<id>"' or "" if id is empty */
+static char *lua_target_field(const char *id) {
+    if (!id || !*id) return axctl_strdup("");
+    return axctl_sprintf(", window = \"address:%s\"", id);
+}
+
+/* luaDirection: maps short direction codes to full names */
+static const char *lua_direction(const char *dir) {
+    if (!dir) return "";
+    if (strcmp(dir, "l") == 0) return "left";
+    if (strcmp(dir, "r") == 0) return "right";
+    if (strcmp(dir, "u") == 0) return "up";
+    if (strcmp(dir, "d") == 0) return "down";
+    return dir;
+}
+
+/* Config key mapping (matches Go's mapping) */
+static const char *hypr_map_config_key(const char *key) {
+    if (!key) return key;
+    if (strcmp(key, "gaps.inner") == 0) return "general:gaps_in";
+    if (strcmp(key, "gaps.outer") == 0) return "general:gaps_out";
+    if (strcmp(key, "border.width") == 0) return "general:border_size";
+    if (strcmp(key, "border.active_color") == 0) return "general:col.active_border";
+    if (strcmp(key, "border.inactive_color") == 0) return "general:col.inactive_border";
+    if (strcmp(key, "opacity.active") == 0) return "decoration:active_opacity";
+    if (strcmp(key, "opacity.inactive") == 0) return "decoration:inactive_opacity";
+    if (strcmp(key, "blur.enabled") == 0) return "decoration:blur:enabled";
+    if (strcmp(key, "blur.size") == 0) return "decoration:blur:size";
+    if (strcmp(key, "blur.passes") == 0) return "decoration:blur:passes";
+    return key;
+}
+
 /* ── Socket path construction ───────────────────────────────────────── */
 static char *get_socket_path(hyprland_data_t *d, const char *socket_name) {
     const char *rt = getenv("XDG_RUNTIME_DIR");
@@ -127,8 +167,9 @@ static bool hypr_supports_lua(hyprland_data_t *d) {
             const char *v = ver;
             if (*v == 'v') v++;
             int major = 0, minor = 0;
-            sscanf(v, "%d.%d", &major, &minor);
-            use_lua = (major > 0) || (major == 0 && minor >= 55);
+            if (sscanf(v, "%d.%d", &major, &minor) >= 2) {
+                use_lua = (major > 0) || (major == 0 && minor >= 55);
+            }
         }
         json_object_put(root);
     }
@@ -218,8 +259,12 @@ static void *event_thread_func(void *arg) {
         if (evt.type == EVENT_WINDOW_CREATED) {
             /* data: address,workspace,class,title */
             char **parts; int n = axctl_strsplit(data, ',', &parts);
-            if (n >= 1) json_object_object_add(evt.payload, "address",
-                json_object_new_string(axctl_sprintf("0x%s", parts[0])));
+            if (n >= 1) {
+                char *addr_str = axctl_sprintf("0x%s", parts[0]);
+                json_object_object_add(evt.payload, "address",
+                    json_object_new_string(addr_str));
+                free(addr_str);
+            }
             if (n >= 3) json_object_object_add(evt.payload, "class", json_object_new_string(parts[2]));
             if (n >= 4) json_object_object_add(evt.payload, "title", json_object_new_string(parts[3]));
             if (n >= 2) json_object_object_add(evt.payload, "workspace", json_object_new_string(parts[1]));
@@ -233,16 +278,16 @@ static void *event_thread_func(void *arg) {
             }
             axctl_strsplit_free(parts, n);
         } else if (evt.type == EVENT_WINDOW_CLOSED) {
-            char *addr = axctl_sprintf("0x%s", data);
-            json_object_object_add(evt.payload, "address", json_object_new_string(addr));
-            json_object_object_add(evt.payload, "id", json_object_new_string(addr));
-            free(addr);
+            char *addr_str = axctl_sprintf("0x%s", data);
+            json_object_object_add(evt.payload, "address", json_object_new_string(addr_str));
+            json_object_object_add(evt.payload, "id", json_object_new_string(addr_str));
+            free(addr_str);
         } else if (evt.type == EVENT_WINDOW_FOCUSED) {
             /* activewindowv2: address */
             if (strcmp(line, "activewindowv2") == 0) {
-                char *addr = axctl_sprintf("0x%s", data);
-                json_object_object_add(evt.payload, "address", json_object_new_string(addr));
-                free(addr);
+                char *addr_str = axctl_sprintf("0x%s", data);
+                json_object_object_add(evt.payload, "address", json_object_new_string(addr_str));
+                free(addr_str);
             } else {
                 /* activewindow: class,title */
                 char **parts; int n = axctl_strsplit(data, ',', &parts);
@@ -258,24 +303,23 @@ static void *event_thread_func(void *arg) {
             /* movewindowv2: address,workspace_id,workspace_name */
             char **parts; int n = axctl_strsplit(data, ',', &parts);
             if (n >= 1) {
-                char *addr = axctl_sprintf("0x%s", parts[0]);
-                json_object_object_add(evt.payload, "address", json_object_new_string(addr));
-                json_object_object_add(evt.payload, "id", json_object_new_string(addr));
-                free(addr);
+                char *addr_str = axctl_sprintf("0x%s", parts[0]);
+                json_object_object_add(evt.payload, "address", json_object_new_string(addr_str));
+                json_object_object_add(evt.payload, "id", json_object_new_string(addr_str));
+                free(addr_str);
             }
             if (n >= 3) json_object_object_add(evt.payload, "workspace", json_object_new_string(parts[2]));
             axctl_strsplit_free(parts, n);
         } else if (evt.type == EVENT_FULLSCREEN_CHANGED) {
             json_object_object_add(evt.payload, "fullscreen",
                 json_object_new_boolean(data[0] == '1'));
-            /* windowtitlev2 provides address,title */
         } else if (evt.type == EVENT_FLOATING_CHANGED) {
             /* changefloatingmode: address,state */
             char **parts; int n = axctl_strsplit(data, ',', &parts);
             if (n >= 1) {
-                char *addr = axctl_sprintf("0x%s", parts[0]);
-                json_object_object_add(evt.payload, "address", json_object_new_string(addr));
-                free(addr);
+                char *addr_str = axctl_sprintf("0x%s", parts[0]);
+                json_object_object_add(evt.payload, "address", json_object_new_string(addr_str));
+                free(addr_str);
             }
             if (n >= 2) json_object_object_add(evt.payload, "floating",
                 json_object_new_boolean(parts[1][0] == '1'));
@@ -324,16 +368,17 @@ static int hypr_list_windows(void *priv, axctl_window_array_t *out) {
     for (int i = 0; i < len; i++) {
         struct json_object *w = json_object_array_get_idx(arr, i);
         axctl_window_t win = {0};
-        /* Hyprland uses hex addresses as IDs */
-        win.id = axctl_sprintf("0x%llx", (long long)json_get_int(w, "address", 0));
-        /* Try "address" as string first */
+
+        /* Go uses c.Address directly (which is the hex string from JSON) */
         const char *addr_str = json_get_string(w, "address");
         if (addr_str && *addr_str) {
-            free(win.id);
             win.id = axctl_strdup(addr_str);
+        } else {
+            win.id = axctl_sprintf("0x%llx", (long long)json_get_int(w, "address", 0));
         }
+
         win.title = axctl_strdup(json_get_string(w, "title"));
-        /* Hyprland uses "class" instead of "app_id" */
+        /* Hyprland uses "class" for app_id */
         const char *cls = json_get_string(w, "class");
         if (!cls || !*cls) cls = json_get_string(w, "initialClass");
         win.app_id = axctl_strdup(cls);
@@ -346,15 +391,19 @@ static int hypr_list_windows(void *priv, axctl_window_array_t *out) {
             win.workspace_id = axctl_strdup("");
         }
 
-        win.is_focused = json_get_bool(w, "focusHistoryID", false) == 0;
+        /* Go sets IsFocused = false for all windows (not from focusHistoryID) */
+        win.is_focused = false;
         win.is_floating = json_get_bool(w, "floating", false);
-        win.is_fullscreen = json_get_bool(w, "fullscreen", false);
-        win.is_hidden = json_get_bool(w, "hidden", false);
+        /* Go: IsFullscreen = c.Fullscreen != 0  (it's an int, not bool) */
+        win.is_fullscreen = (json_get_int(w, "fullscreen", 0) != 0);
+        win.is_hidden = false; /* Go sets IsHidden = false always */
 
         /* Metadata with full Hyprland-specific fields */
         win.metadata = json_object_new_object();
+        char *mon_str = axctl_sprintf("%d", json_get_int(w, "monitor", -1));
         json_object_object_add(win.metadata, "monitor_id",
-            json_object_new_string(axctl_sprintf("%d", json_get_int(w, "monitor", -1))));
+            json_object_new_string(mon_str));
+        free(mon_str);
         json_object_object_add(win.metadata, "pinned",
             json_object_new_boolean(json_get_bool(w, "pinned", false)));
 
@@ -397,91 +446,182 @@ static int hypr_active_window(void *priv, char **out_id) {
     return AXCTL_OK;
 }
 
+/* FocusWindow: versioned dispatch with address target */
 static int hypr_focus_window(void *priv, const char *id) {
     hyprland_data_t *d = (hyprland_data_t *)priv;
-    char *cmd = axctl_sprintf("dispatch focuswindow address:%s", id);
-    int rc = hypr_dispatch_locked(d, cmd, NULL);
-    free(cmd);
+    char *target = hypr_target(id);
+    char *legacy = axctl_sprintf("focuswindow %s", target);
+    char *lua = axctl_sprintf("hl.dsp.focus({ window = \"%s\" })", target);
+    int rc = hypr_dispatch_versioned(d, legacy, lua, NULL);
+    free(target); free(legacy); free(lua);
     return rc;
 }
 
+/* FocusDir: versioned dispatch */
 static int hypr_focus_dir(void *priv, const char *direction) {
     hyprland_data_t *d = (hyprland_data_t *)priv;
-    return hypr_dispatch_versioned(d,
-        axctl_sprintf("movefocus %s", direction),
-        axctl_sprintf("moveFocus(%s)", direction), NULL);
+    char *legacy = axctl_sprintf("movefocus %s", direction);
+    char *lua = axctl_sprintf("hl.dsp.focus({ direction = \"%s\" })", lua_direction(direction));
+    int rc = hypr_dispatch_versioned(d, legacy, lua, NULL);
+    free(legacy); free(lua);
+    return rc;
 }
 
+/* CloseWindow: versioned dispatch, handles empty id */
 static int hypr_close_window(void *priv, const char *id) {
     hyprland_data_t *d = (hyprland_data_t *)priv;
-    char *cmd = axctl_sprintf("dispatch closewindow address:%s", id);
-    int rc = hypr_dispatch_locked(d, cmd, NULL);
-    free(cmd);
+    char *target = hypr_target(id);
+    char *legacy = axctl_sprintf("closewindow %s", target);
+    char *lua;
+    if (target[0] != '\0') {
+        lua = axctl_sprintf("hl.dsp.window.close({ window = \"%s\" })", target);
+    } else {
+        lua = axctl_strdup("hl.dsp.window.close()");
+    }
+    int rc = hypr_dispatch_versioned(d, legacy, lua, NULL);
+    free(target); free(legacy); free(lua);
     return rc;
 }
 
+/* MoveWindow: versioned dispatch with direction and optional target */
 static int hypr_move_window(void *priv, const char *id, const char *direction) {
     hyprland_data_t *d = (hyprland_data_t *)priv;
-    (void)id; /* Hyprland moves the active window */
-    return hypr_dispatch_versioned(d,
-        axctl_sprintf("movewindow %s", direction),
-        axctl_sprintf("moveWindow(%s)", direction), NULL);
+    char *legacy;
+    if (id && *id) {
+        char *target = hypr_target(id);
+        legacy = axctl_sprintf("movewindow %s,%s", direction, target);
+        free(target);
+    } else {
+        legacy = axctl_sprintf("movewindow %s", direction);
+    }
+    char *ltf = lua_target_field(id);
+    char *lua = axctl_sprintf("hl.dsp.window.move({ direction = \"%s\"%s })",
+                              lua_direction(direction), ltf);
+    int rc = hypr_dispatch_versioned(d, legacy, lua, NULL);
+    free(legacy); free(ltf); free(lua);
+    return rc;
 }
 
+/* ResizeWindow: versioned dispatch */
 static int hypr_resize_window(void *priv, const char *id, int w, int h) {
     hyprland_data_t *d = (hyprland_data_t *)priv;
-    char *cmd = axctl_sprintf("dispatch resizewindowpixel exact %d %d,address:%s", w, h, id);
-    int rc = hypr_dispatch_locked(d, cmd, NULL);
-    free(cmd);
+    char *target = hypr_target(id);
+    char *ltf = lua_target_field(id);
+    char *legacy = axctl_sprintf("resizewindowpixel exact %d %d,%s", w, h, target);
+    char *lua = axctl_sprintf("hl.dsp.window.resize({ x = %d, y = %d%s })", w, h, ltf);
+    int rc = hypr_dispatch_versioned(d, legacy, lua, NULL);
+    free(target); free(ltf); free(legacy); free(lua);
     return rc;
 }
 
+/* ToggleFloating: versioned dispatch */
 static int hypr_toggle_floating(void *priv, const char *id) {
     hyprland_data_t *d = (hyprland_data_t *)priv;
-    char *cmd = axctl_sprintf("dispatch togglefloating address:%s", id);
-    int rc = hypr_dispatch_locked(d, cmd, NULL);
-    free(cmd);
+    char *target = hypr_target(id);
+    char *ltf = lua_target_field(id);
+    char *legacy = axctl_sprintf("togglefloating %s", target);
+    char *lua = axctl_sprintf("hl.dsp.window.float({ action = \"toggle\"%s })", ltf);
+    int rc = hypr_dispatch_versioned(d, legacy, lua, NULL);
+    free(target); free(ltf); free(legacy); free(lua);
     return rc;
 }
 
+/* SetFullscreen: must check current state first (matches Go logic) */
 static int hypr_set_fullscreen(void *priv, const char *id, int state) {
     hyprland_data_t *d = (hyprland_data_t *)priv;
-    (void)id;
-    char *cmd = axctl_sprintf("dispatch fullscreen %d", state ? 1 : 0);
-    int rc = hypr_dispatch_locked(d, cmd, NULL);
-    free(cmd);
-    return rc;
+
+    /* Get list of windows to check current fullscreen state */
+    axctl_window_array_t windows;
+    int rc = hypr_list_windows(priv, &windows);
+    if (rc != AXCTL_OK) return rc;
+
+    /* Determine target ID */
+    char *target_id = NULL;
+    if (id && *id) {
+        target_id = axctl_strdup(id);
+    } else {
+        rc = hypr_active_window(priv, &target_id);
+        if (rc != AXCTL_OK) {
+            axctl_window_array_free(&windows);
+            return rc;
+        }
+    }
+
+    /* Check if the target window is currently fullscreen */
+    bool is_fs = false;
+    for (size_t i = 0; i < windows.count; i++) {
+        if (windows.items[i].id && target_id &&
+            strcmp(windows.items[i].id, target_id) == 0) {
+            is_fs = windows.items[i].is_fullscreen;
+            break;
+        }
+    }
+    axctl_window_array_free(&windows);
+    free(target_id);
+
+    /* Only toggle if current state differs from desired state */
+    if (is_fs != (bool)state) {
+        return hypr_dispatch_versioned(d,
+            "fullscreen 0",
+            "hl.dsp.window.fullscreen({ mode = \"fullscreen\", action = \"toggle\" })",
+            NULL);
+    }
+    return AXCTL_OK;
 }
 
+/* SetMaximized: versioned dispatch with proper fullscreen mode
+ * Go: fullscreen 0 (unset) / fullscreen 1 (set), NOT the same as fullscreen toggle */
 static int hypr_set_maximized(void *priv, const char *id, int state) {
     hyprland_data_t *d = (hyprland_data_t *)priv;
     (void)id;
-    char *cmd = axctl_sprintf("dispatch fullscreen %d", state ? 1 : 0);
-    int rc = hypr_dispatch_locked(d, cmd, NULL);
-    free(cmd);
+    const char *val = state ? "1" : "0";
+    const char *action = state ? "set" : "unset";
+    char *legacy = axctl_sprintf("fullscreen %s", val);
+    char *lua = axctl_sprintf("hl.dsp.window.fullscreen({ mode = \"maximized\", action = \"%s\" })", action);
+    int rc = hypr_dispatch_versioned(d, legacy, lua, NULL);
+    free(legacy); free(lua);
     return rc;
 }
 
+/* PinWindow: versioned dispatch */
 static int hypr_pin_window(void *priv, const char *id, int state) {
     hyprland_data_t *d = (hyprland_data_t *)priv;
     (void)state;
-    char *cmd = axctl_sprintf("dispatch pin address:%s", id);
-    int rc = hypr_dispatch_locked(d, cmd, NULL);
-    free(cmd);
+    char *target = hypr_target(id);
+    char *ltf = lua_target_field(id);
+    char *legacy = axctl_sprintf("pin %s", target);
+    char *lua = axctl_sprintf("hl.dsp.window.pin({ action = \"toggle\"%s })", ltf);
+    int rc = hypr_dispatch_versioned(d, legacy, lua, NULL);
+    free(target); free(ltf); free(legacy); free(lua);
     return rc;
 }
 
+/* ToggleGroup: versioned dispatch */
 static int hypr_toggle_group(void *priv, const char *id) {
     hyprland_data_t *d = (hyprland_data_t *)priv;
     (void)id;
-    return hypr_dispatch_locked(d, "dispatch togglegroup", NULL);
+    return hypr_dispatch_versioned(d, "togglegroup", "hl.dsp.group.toggle()", NULL);
 }
 
+/* GroupNav: maps direction to b/f, then versioned dispatch
+ * Go: l/u/b -> "b" (backward), everything else -> "f" (forward)
+ * Lua: "b" -> prev(), "f" -> next() */
 static int hypr_group_nav(void *priv, const char *direction) {
     hyprland_data_t *d = (hyprland_data_t *)priv;
-    char *cmd = axctl_sprintf("dispatch changegroupactive %s", direction);
-    int rc = hypr_dispatch_locked(d, cmd, NULL);
-    free(cmd);
+
+    const char *dir = "f";
+    if (direction && (strcmp(direction, "l") == 0 ||
+                      strcmp(direction, "u") == 0 ||
+                      strcmp(direction, "b") == 0)) {
+        dir = "b";
+    }
+
+    const char *lua_dir = (strcmp(dir, "b") == 0) ? "prev" : "next";
+
+    char *legacy = axctl_sprintf("changegroupactive %s", dir);
+    char *lua = axctl_sprintf("hl.dsp.group.%s()", lua_dir);
+    int rc = hypr_dispatch_versioned(d, legacy, lua, NULL);
+    free(legacy); free(lua);
     return rc;
 }
 
@@ -491,11 +631,15 @@ static int hypr_set_layout_property(void *priv, const char *id,
     return AXCTL_ERR_NOT_SUPPORTED;
 }
 
+/* MoveWindowPixel: versioned dispatch */
 static int hypr_move_window_pixel(void *priv, const char *id, int x, int y) {
     hyprland_data_t *d = (hyprland_data_t *)priv;
-    char *cmd = axctl_sprintf("dispatch movewindowpixel %d %d,address:%s", x, y, id);
-    int rc = hypr_dispatch_locked(d, cmd, NULL);
-    free(cmd);
+    char *target = hypr_target(id);
+    char *ltf = lua_target_field(id);
+    char *legacy = axctl_sprintf("movewindowpixel exact %d %d,%s", x, y, target);
+    char *lua = axctl_sprintf("hl.dsp.window.move({ x = %d, y = %d%s })", x, y, ltf);
+    int rc = hypr_dispatch_versioned(d, legacy, lua, NULL);
+    free(target); free(ltf); free(legacy); free(lua);
     return rc;
 }
 
@@ -527,9 +671,10 @@ static int hypr_list_workspaces(void *priv, axctl_workspace_array_t *out) {
         axctl_workspace_t ws = {0};
         ws.id = axctl_sprintf("%d", ws_id);
         ws.name = axctl_strdup(json_get_string(w, "name"));
-        ws.monitor_id = axctl_sprintf("%s", json_get_string(w, "monitor"));
+        ws.monitor_id = axctl_strdup(json_get_string(w, "monitor"));
         ws.is_active = (ws_id == active_id);
-        ws.is_empty = (json_get_int(w, "windows", 0) == 0);
+        /* Go: IsEmpty = false always (not parsing windows count) */
+        ws.is_empty = false;
         axctl_workspace_array_push(out, ws);
     }
 
@@ -552,43 +697,60 @@ static int hypr_active_workspace(void *priv, axctl_workspace_t *out) {
     out->name = axctl_strdup(json_get_string(obj, "name"));
     out->monitor_id = axctl_strdup(json_get_string(obj, "monitor"));
     out->is_active = true;
-    out->is_empty = (json_get_int(obj, "windows", 0) == 0);
+    /* Go: IsEmpty = false */
+    out->is_empty = false;
 
     json_object_put(obj);
     return AXCTL_OK;
 }
 
+/* SwitchWorkspace: versioned dispatch */
 static int hypr_switch_workspace(void *priv, const char *id) {
     hyprland_data_t *d = (hyprland_data_t *)priv;
-    char *cmd = axctl_sprintf("dispatch workspace %s", id);
-    int rc = hypr_dispatch_locked(d, cmd, NULL);
-    free(cmd);
+    char *legacy = axctl_sprintf("workspace %s", id);
+    char *lua = axctl_sprintf("hl.dsp.focus({ workspace = \"%s\" })", id);
+    int rc = hypr_dispatch_versioned(d, legacy, lua, NULL);
+    free(legacy); free(lua);
     return rc;
 }
 
+/* MoveToWorkspace: versioned dispatch */
 static int hypr_move_to_workspace(void *priv, const char *win_id, const char *ws_id) {
     hyprland_data_t *d = (hyprland_data_t *)priv;
-    char *cmd = axctl_sprintf("dispatch movetoworkspace %s,address:%s", ws_id, win_id);
-    int rc = hypr_dispatch_locked(d, cmd, NULL);
-    free(cmd);
+    char *target = hypr_target(win_id);
+    char *ltf = lua_target_field(win_id);
+    char *legacy = axctl_sprintf("movetoworkspace %s,%s", ws_id, target);
+    char *lua = axctl_sprintf("hl.dsp.window.move({ workspace = \"%s\"%s })", ws_id, ltf);
+    int rc = hypr_dispatch_versioned(d, legacy, lua, NULL);
+    free(target); free(ltf); free(legacy); free(lua);
     return rc;
 }
 
+/* MoveToWorkspaceSilent: versioned dispatch, adds follow=false in lua */
 static int hypr_move_to_workspace_silent(void *priv, const char *win_id, const char *ws_id) {
     hyprland_data_t *d = (hyprland_data_t *)priv;
-    char *cmd = axctl_sprintf("dispatch movetoworkspacesilent %s,address:%s", ws_id, win_id);
-    int rc = hypr_dispatch_locked(d, cmd, NULL);
-    free(cmd);
+    char *target = hypr_target(win_id);
+    char *ltf = lua_target_field(win_id);
+    char *legacy = axctl_sprintf("movetoworkspacesilent %s,%s", ws_id, target);
+    char *lua = axctl_sprintf("hl.dsp.window.move({ workspace = \"%s\", follow = false%s })", ws_id, ltf);
+    int rc = hypr_dispatch_versioned(d, legacy, lua, NULL);
+    free(target); free(ltf); free(legacy); free(lua);
     return rc;
 }
 
+/* ToggleSpecialWorkspace: versioned dispatch */
 static int hypr_toggle_special(void *priv, const char *name) {
     hyprland_data_t *d = (hyprland_data_t *)priv;
-    char *cmd = (name && *name) ?
-        axctl_sprintf("dispatch togglespecialworkspace %s", name) :
-        axctl_strdup("dispatch togglespecialworkspace");
-    int rc = hypr_dispatch_locked(d, cmd, NULL);
-    free(cmd);
+    char *legacy, *lua;
+    if (name && *name) {
+        legacy = axctl_sprintf("togglespecialworkspace %s", name);
+        lua = axctl_sprintf("hl.dsp.workspace.toggle_special(\"%s\")", name);
+    } else {
+        legacy = axctl_strdup("togglespecialworkspace");
+        lua = axctl_strdup("hl.dsp.workspace.toggle_special()");
+    }
+    int rc = hypr_dispatch_versioned(d, legacy, lua, NULL);
+    free(legacy); free(lua);
     return rc;
 }
 
@@ -610,7 +772,8 @@ static int hypr_list_monitors(void *priv, axctl_monitor_array_t *out) {
         axctl_monitor_t mon = {0};
         mon.id = axctl_sprintf("%d", json_get_int(m, "id", 0));
         mon.name = axctl_strdup(json_get_string(m, "name"));
-        mon.description = axctl_strdup(json_get_string(m, "description"));
+        /* Go: Description = "" */
+        mon.description = axctl_strdup("");
         mon.width = json_get_int(m, "width", 0);
         mon.height = json_get_int(m, "height", 0);
         mon.refresh_rate = json_get_double(m, "refreshRate", 0.0);
@@ -623,28 +786,44 @@ static int hypr_list_monitors(void *priv, axctl_monitor_array_t *out) {
     return AXCTL_OK;
 }
 
+/* FocusMonitor: versioned dispatch */
 static int hypr_focus_monitor(void *priv, const char *id) {
     hyprland_data_t *d = (hyprland_data_t *)priv;
-    char *cmd = axctl_sprintf("dispatch focusmonitor %s", id);
-    int rc = hypr_dispatch_locked(d, cmd, NULL);
-    free(cmd);
+    char *legacy = axctl_sprintf("focusmonitor %s", id);
+    char *lua = axctl_sprintf("hl.dsp.focus({ monitor = \"%s\" })", id);
+    int rc = hypr_dispatch_versioned(d, legacy, lua, NULL);
+    free(legacy); free(lua);
     return rc;
 }
 
+/* MoveToMonitor: Go uses "movewindowmon MON,TARGET" (NOT "movewindow mon:MON") */
 static int hypr_move_to_monitor(void *priv, const char *win_id, const char *mon_id) {
     hyprland_data_t *d = (hyprland_data_t *)priv;
-    (void)win_id;
-    char *cmd = axctl_sprintf("dispatch movewindow mon:%s", mon_id);
-    int rc = hypr_dispatch_locked(d, cmd, NULL);
-    free(cmd);
+    char *target = hypr_target(win_id);
+    char *ltf = lua_target_field(win_id);
+    char *legacy = axctl_sprintf("movewindowmon %s,%s", mon_id, target);
+    char *lua = axctl_sprintf("hl.dsp.window.move({ monitor = \"%s\"%s })", mon_id, ltf);
+    int rc = hypr_dispatch_versioned(d, legacy, lua, NULL);
+    free(target); free(ltf); free(legacy); free(lua);
     return rc;
 }
 
+/* SetDpms: versioned dispatch, handles empty monitorID separately (matches Go) */
 static int hypr_set_dpms(void *priv, const char *mon_id, int on) {
     hyprland_data_t *d = (hyprland_data_t *)priv;
-    char *cmd = axctl_sprintf("dispatch dpms %s %s", on ? "on" : "off", mon_id);
-    int rc = hypr_dispatch_locked(d, cmd, NULL);
-    free(cmd);
+    const char *state = on ? "on" : "off";
+
+    if (mon_id && *mon_id) {
+        char *legacy = axctl_sprintf("dpms %s %s", state, mon_id);
+        char *lua = axctl_sprintf("hl.dsp.dpms({ action = \"%s\", monitor = \"%s\" })", state, mon_id);
+        int rc = hypr_dispatch_versioned(d, legacy, lua, NULL);
+        free(legacy); free(lua);
+        return rc;
+    }
+    char *legacy = axctl_sprintf("dpms %s", state);
+    char *lua = axctl_sprintf("hl.dsp.dpms({ action = \"%s\" })", state);
+    int rc = hypr_dispatch_versioned(d, legacy, lua, NULL);
+    free(legacy); free(lua);
     return rc;
 }
 
@@ -669,42 +848,58 @@ static int hypr_get_config(void *priv, const char *key, struct json_object **out
     return *out ? AXCTL_OK : AXCTL_ERR_PARSE;
 }
 
+/* SetConfig: applies config key mapping before dispatching (matches Go) */
 static int hypr_set_config(void *priv, const char *key, const char *value) {
     hyprland_data_t *d = (hyprland_data_t *)priv;
-    char *cmd = axctl_sprintf("keyword %s %s", key, value ? value : "");
+    const char *hypr_key = hypr_map_config_key(key);
+    char *cmd = axctl_sprintf("keyword %s %s", hypr_key, value ? value : "");
     int rc = hypr_dispatch_locked(d, cmd, NULL);
     free(cmd);
     return rc;
 }
 
+/* BatchConfig: applies config key mapping and uses [[BATCH]] (matches Go) */
 static int hypr_batch_config(void *priv, struct json_object *configs) {
     hyprland_data_t *d = (hyprland_data_t *)priv;
-    char *batch = axctl_strdup("[[BATCH]]");
+    /* Build batch command: Go uses "[[BATCH]]" + join(cmds, ";") */
+    char *batch = axctl_strdup("");
+    bool first = true;
 
     json_object_object_foreach(configs, key, val) {
+        const char *hypr_key = hypr_map_config_key(key);
         const char *v = json_object_get_string(val);
-        char *part = axctl_sprintf(";keyword %s %s", key, v ? v : "");
+        char *part;
+        if (first) {
+            part = axctl_sprintf("keyword %s %s", hypr_key, v ? v : "");
+            first = false;
+        } else {
+            part = axctl_sprintf(";keyword %s %s", hypr_key, v ? v : "");
+        }
         axctl_str_append(&batch, part);
         free(part);
     }
 
-    int rc = hypr_dispatch_locked(d, batch, NULL);
+    char *cmd = axctl_sprintf("[[BATCH]]%s", batch);
     free(batch);
+    int rc = hypr_dispatch_locked(d, cmd, NULL);
+    free(cmd);
     return rc;
 }
 
+/* BatchKeybinds: matches Go logic exactly
+ * Go uses "bind" + flags (e.g. "bindm", "bindl"), NOT just the flags string.
+ * Go uses commas as separator (no spaces), NOT "; keyword bind MODS, KEY, ...".
+ * Go uses [[BATCH]] prefix with semicolon-separated commands. */
 static int hypr_batch_keybinds(void *priv, const char *json_payload) {
     hyprland_data_t *d = (hyprland_data_t *)priv;
     struct json_object *root = json_tokener_parse(json_payload);
     if (!root) return AXCTL_ERR_PARSE;
 
-    char *batch = axctl_strdup("[[BATCH]]");
+    /* Collect commands into a dynamic array, then join with ";" */
+    char *batch_parts = axctl_strdup("");
+    bool has_cmds = false;
 
-    /* IMPORTANT: Process unbinds BEFORE binds (matching Go version).
-     * NothingLess sends the same keys in both binds and unbinds arrays
-     * (unbind old, then bind new). If binds are processed first and
-     * unbinds second, the bind is immediately cancelled by the unbind. */
-
+    /* Process unbinds first (matches Go order) */
     struct json_object *unbinds = json_get_array(root, "unbinds");
     if (unbinds) {
         int len = json_object_array_length(unbinds);
@@ -723,13 +918,20 @@ static int hypr_batch_keybinds(void *priv, const char *json_payload) {
                 }
             }
 
-            /* Hyprland dispatch uses keyword unbind, not 'unbind =' */
-            char *part = axctl_sprintf(";keyword unbind %s, %s", mods_str, key);
-            axctl_str_append(&batch, part);
+            /* Go: fmt.Sprintf("keyword unbind %s,%s", mods, u.Key) */
+            char *part;
+            if (has_cmds) {
+                part = axctl_sprintf(";keyword unbind %s,%s", mods_str, key);
+            } else {
+                part = axctl_sprintf("keyword unbind %s,%s", mods_str, key);
+                has_cmds = true;
+            }
+            axctl_str_append(&batch_parts, part);
             free(part); free(mods_str);
         }
     }
 
+    /* Process binds */
     struct json_object *binds = json_get_array(root, "binds");
     if (binds) {
         int len = json_object_array_length(binds);
@@ -751,39 +953,54 @@ static int hypr_batch_keybinds(void *priv, const char *json_payload) {
                 }
             }
 
-            char *part;
-            const char *bind_kw = "bind";
+            /* Go: bindKeyword = "bind" + flags (e.g. "bindm", "bindl") */
+            char *bind_kw;
             if (flags && *flags) {
-                /* e.g. "m" -> bindm, "l" -> bindl, "r" -> bindr */
-                bind_kw = flags;
+                bind_kw = axctl_sprintf("bind%s", flags);
+            } else {
+                bind_kw = axctl_strdup("bind");
             }
 
-            /* Hyprland's [[BATCH]] dispatch uses keyword command format:
-             *   keyword bind MODS,KEY,DISPATCHER,ARG
-             * NOT config file format (no '=' sign).
-             * Go version does:  keyword bind SUPER,Q,closewindow  */
-            if (argument && *argument) {
-                part = axctl_sprintf(";keyword %s %s, %s, %s, %s",
-                    bind_kw, mods_str, key, dispatcher, argument);
+            /* Go: if flags == "m" && argument == "" -> no argument field
+             * Otherwise: keyword bindX mods,key,dispatcher,argument */
+            char *part;
+            const char *sep = has_cmds ? ";" : "";
+            if (flags && strcmp(flags, "m") == 0 && (!argument || !*argument)) {
+                part = axctl_sprintf("%skeyword %s %s,%s,%s",
+                    sep, bind_kw, mods_str, key, dispatcher);
             } else {
-                part = axctl_sprintf(";keyword %s %s, %s, %s",
-                    bind_kw, mods_str, key, dispatcher);
+                part = axctl_sprintf("%skeyword %s %s,%s,%s,%s",
+                    sep, bind_kw, mods_str, key, dispatcher,
+                    argument ? argument : "");
             }
-            axctl_str_append(&batch, part);
-            free(part);
-            free(mods_str);
+            if (!has_cmds) has_cmds = true;
+            axctl_str_append(&batch_parts, part);
+            free(part); free(mods_str); free(bind_kw);
         }
     }
 
     json_object_put(root);
-    int rc = hypr_dispatch_locked(d, batch, NULL);
-    free(batch);
+
+    if (!has_cmds) {
+        free(batch_parts);
+        return AXCTL_OK;
+    }
+
+    /* Go: h.dispatch("[[BATCH]]" + strings.Join(cmds, ";")) */
+    char *cmd = axctl_sprintf("[[BATCH]]%s", batch_parts);
+    free(batch_parts);
+    int rc = hypr_dispatch_locked(d, cmd, NULL);
+    free(cmd);
     return rc;
 }
 
+/* RawBatch: Go prepends [[BATCH]] to the command */
 static int hypr_raw_batch(void *priv, const char *command) {
     hyprland_data_t *d = (hyprland_data_t *)priv;
-    return hypr_dispatch_locked(d, command, NULL);
+    char *cmd = axctl_sprintf("[[BATCH]]%s", command);
+    int rc = hypr_dispatch_locked(d, cmd, NULL);
+    free(cmd);
+    return rc;
 }
 
 static int hypr_reload_config(void *priv) {
@@ -815,49 +1032,63 @@ static int hypr_get_cursor_position(void *priv, int *x, int *y) {
     return AXCTL_OK;
 }
 
+/* BindKey: Go uses commas without spaces: "keyword bind mods,key,command" */
 static int hypr_bind_key(void *priv, const char *mods, const char *key, const char *cmd) {
     hyprland_data_t *d = (hyprland_data_t *)priv;
-    char *command = axctl_sprintf("keyword bind %s, %s, %s", mods, key, cmd);
+    char *command = axctl_sprintf("keyword bind %s,%s,%s", mods, key, cmd);
     int rc = hypr_dispatch_locked(d, command, NULL);
     free(command);
     return rc;
 }
 
+/* UnbindKey: Go uses commas without spaces: "keyword unbind mods,key" */
 static int hypr_unbind_key(void *priv, const char *mods, const char *key) {
     hyprland_data_t *d = (hyprland_data_t *)priv;
-    char *cmd = axctl_sprintf("keyword unbind %s, %s", mods, key);
+    char *cmd = axctl_sprintf("keyword unbind %s,%s", mods, key);
     int rc = hypr_dispatch_locked(d, cmd, NULL);
     free(cmd);
     return rc;
 }
 
+/* Execute: versioned dispatch */
 static int hypr_execute(void *priv, const char *command) {
     hyprland_data_t *d = (hyprland_data_t *)priv;
-    char *cmd = axctl_sprintf("dispatch exec %s", command);
-    int rc = hypr_dispatch_locked(d, cmd, NULL);
-    free(cmd);
+    char *legacy = axctl_sprintf("exec %s", command);
+    char *lua = axctl_sprintf("hl.dsp.exec_cmd(\"%s\")", command);
+    int rc = hypr_dispatch_versioned(d, legacy, lua, NULL);
+    free(legacy); free(lua);
     return rc;
 }
 
+/* Exit: versioned dispatch */
 static int hypr_exit(void *priv) {
     hyprland_data_t *d = (hyprland_data_t *)priv;
-    return hypr_dispatch_locked(d, "dispatch exit", NULL);
+    return hypr_dispatch_versioned(d, "exit", "hl.dsp.exit()", NULL);
 }
 
+/* SwitchKeyboardLayout: Go uses "current" NOT "all" */
 static int hypr_switch_keyboard_layout(void *priv, const char *action) {
     hyprland_data_t *d = (hyprland_data_t *)priv;
-    char *cmd = axctl_sprintf("switchxkblayout all %s", action);
+    char *cmd = axctl_sprintf("switchxkblayout current %s", action);
     int rc = hypr_dispatch_locked(d, cmd, NULL);
     free(cmd);
     return rc;
 }
 
+/* SetKeyboardLayouts: Go sends two separate dispatches, not a batch.
+ * Also clears variant if variants is empty. */
 static int hypr_set_keyboard_layouts(void *priv, const char *layouts, const char *variants) {
     hyprland_data_t *d = (hyprland_data_t *)priv;
-    char *batch = axctl_sprintf("[[BATCH]];keyword input:kb_layout %s;keyword input:kb_variant %s",
-                                 layouts, variants ? variants : "");
-    int rc = hypr_dispatch_locked(d, batch, NULL);
-    free(batch);
+
+    char *cmd1 = axctl_sprintf("keyword input:kb_layout %s", layouts);
+    int rc = hypr_dispatch_locked(d, cmd1, NULL);
+    free(cmd1);
+    if (rc != AXCTL_OK) return rc;
+
+    /* Go: if variants != "" send it, else send empty to clear */
+    char *cmd2 = axctl_sprintf("keyword input:kb_variant %s", (variants && *variants) ? variants : "");
+    rc = hypr_dispatch_locked(d, cmd2, NULL);
+    free(cmd2);
     return rc;
 }
 
@@ -883,7 +1114,6 @@ static int hypr_get_capabilities(void *priv, axctl_capabilities_t *out) {
 }
 
 /* ── vtable ─────────────────────────────────────────────────────────── */
-
 
 axctl_compositor_t *hyprland_compositor_create(void) {
     const char *sig = getenv("HYPRLAND_INSTANCE_SIGNATURE");

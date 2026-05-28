@@ -3,6 +3,10 @@
  *
  * Generates hyprlang configuration syntax from universal config types.
  * Supports both legacy (hyprlang) and Lua (Hyprland >= 0.55) output formats.
+ *
+ * The legacy generators produce traditional hyprlang keyword syntax.
+ * The Lua generators produce hl.config() / hl.bind() / hl.window_rule() syntax
+ * matching the Go reference implementation (generator_lua.go).
  */
 
 #include "ipc/hyprland/hyprland.h"
@@ -12,6 +16,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
+
+/* ── Helper: safe string append with auto-free of formatted part ──── */
+static void append_free(char **out, char *part) {
+    axctl_str_append(out, part);
+    free(part);
+}
 
 /* ── hyprlang syntax generators ─────────────────────────────────────── */
 
@@ -22,14 +33,14 @@ char *hyprland_generate_appearance(const axctl_appearance_t *cfg)
 
     if (cfg->gaps) {
         if (cfg->gaps->inner)
-            axctl_str_append(&out, axctl_sprintf("general:gaps_in = %d\n", cfg->gaps->inner->value));
+            append_free(&out, axctl_sprintf("general:gaps_in = %d\n", cfg->gaps->inner->value));
         if (cfg->gaps->outer)
-            axctl_str_append(&out, axctl_sprintf("general:gaps_out = %d\n", cfg->gaps->outer->value));
+            append_free(&out, axctl_sprintf("general:gaps_out = %d\n", cfg->gaps->outer->value));
     }
 
     if (cfg->border) {
         if (cfg->border->width)
-            axctl_str_append(&out, axctl_sprintf("general:border_size = %d\n", cfg->border->width->value));
+            append_free(&out, axctl_sprintf("general:border_size = %d\n", cfg->border->width->value));
         if (cfg->border->active_color) {
             char *c = axctl_hyprland_color(cfg->border->active_color);
             char *line = axctl_sprintf("general:col.active_border = %s\n", c);
@@ -43,32 +54,32 @@ char *hyprland_generate_appearance(const axctl_appearance_t *cfg)
             free(line); free(c);
         }
         if (cfg->border->rounding)
-            axctl_str_append(&out, axctl_sprintf("decoration:rounding = %d\n", cfg->border->rounding->value));
+            append_free(&out, axctl_sprintf("decoration:rounding = %d\n", cfg->border->rounding->value));
     }
 
     if (cfg->opacity) {
         if (cfg->opacity->active)
-            axctl_str_append(&out, axctl_sprintf("decoration:active_opacity = %.2f\n", cfg->opacity->active->value));
+            append_free(&out, axctl_sprintf("decoration:active_opacity = %.2f\n", cfg->opacity->active->value));
         if (cfg->opacity->inactive)
-            axctl_str_append(&out, axctl_sprintf("decoration:inactive_opacity = %.2f\n", cfg->opacity->inactive->value));
+            append_free(&out, axctl_sprintf("decoration:inactive_opacity = %.2f\n", cfg->opacity->inactive->value));
     }
 
     if (cfg->blur) {
         if (cfg->blur->enabled)
-            axctl_str_append(&out, axctl_sprintf("decoration:blur:enabled = %s\n",
+            append_free(&out, axctl_sprintf("decoration:blur:enabled = %s\n",
                 cfg->blur->enabled->value ? "true" : "false"));
         if (cfg->blur->size)
-            axctl_str_append(&out, axctl_sprintf("decoration:blur:size = %d\n", cfg->blur->size->value));
+            append_free(&out, axctl_sprintf("decoration:blur:size = %d\n", cfg->blur->size->value));
         if (cfg->blur->passes)
-            axctl_str_append(&out, axctl_sprintf("decoration:blur:passes = %d\n", cfg->blur->passes->value));
+            append_free(&out, axctl_sprintf("decoration:blur:passes = %d\n", cfg->blur->passes->value));
     }
 
     if (cfg->shadow) {
         if (cfg->shadow->enabled)
-            axctl_str_append(&out, axctl_sprintf("decoration:shadow:enabled = %s\n",
+            append_free(&out, axctl_sprintf("decoration:shadow:enabled = %s\n",
                 cfg->shadow->enabled->value ? "true" : "false"));
         if (cfg->shadow->size)
-            axctl_str_append(&out, axctl_sprintf("decoration:shadow:range = %d\n", cfg->shadow->size->value));
+            append_free(&out, axctl_sprintf("decoration:shadow:range = %d\n", cfg->shadow->size->value));
         if (cfg->shadow->color) {
             char *c = axctl_hyprland_color(cfg->shadow->color);
             char *line = axctl_sprintf("decoration:shadow:color = %s\n", c);
@@ -79,12 +90,12 @@ char *hyprland_generate_appearance(const axctl_appearance_t *cfg)
 
     if (cfg->animations) {
         if (cfg->animations->enabled)
-            axctl_str_append(&out, axctl_sprintf("animations:enabled = %s\n",
+            append_free(&out, axctl_sprintf("animations:enabled = %s\n",
                 cfg->animations->enabled->value ? "true" : "false"));
     }
 
     if (cfg->layout)
-        axctl_str_append(&out, axctl_sprintf("general:layout = %s\n", cfg->layout));
+        append_free(&out, axctl_sprintf("general:layout = %s\n", cfg->layout));
 
     return out;
 }
@@ -105,11 +116,27 @@ char *hyprland_generate_keybinds(const axctl_keybind_t *binds, int count)
             axctl_str_append(&mods, kb->modifiers[j]);
         }
 
-        char *line = axctl_sprintf("bind = %s, %s, %s, %s\n",
-            *mods ? mods : "",
-            kb->key,
-            kb->dispatcher ? kb->dispatcher : "exec",
-            kb->argument ? kb->argument : "");
+        /* Determine bind keyword based on mouse key */
+        const char *bind_kw = "bind";
+        if (kb->key && (strncasecmp(kb->key, "mouse:", 6) == 0)) {
+            bind_kw = "bindm";
+        }
+
+        char *line;
+        if (kb->argument && *kb->argument) {
+            line = axctl_sprintf("%s = %s, %s, %s, %s\n",
+                bind_kw,
+                *mods ? mods : "",
+                kb->key,
+                kb->dispatcher ? kb->dispatcher : "exec",
+                kb->argument);
+        } else {
+            line = axctl_sprintf("%s = %s, %s, %s\n",
+                bind_kw,
+                *mods ? mods : "",
+                kb->key,
+                kb->dispatcher ? kb->dispatcher : "exec");
+        }
         axctl_str_append(&out, line);
         free(line);
         free(mods);
@@ -201,66 +228,254 @@ char *hyprland_generate_startup(char **exec, int exec_count,
 {
     char *out = axctl_strdup("# Startup (generated by axctl)\n");
 
-    for (int i = 0; i < exec_count; i++) {
-        char *line = axctl_sprintf("exec = %s\n", exec[i]);
+    for (int i = 0; i < exec_once_count; i++) {
+        if (!exec_once[i] || !*exec_once[i]) continue;
+        char *line = axctl_sprintf("exec-once = %s\n", exec_once[i]);
         axctl_str_append(&out, line); free(line);
     }
-    for (int i = 0; i < exec_once_count; i++) {
-        char *line = axctl_sprintf("exec-once = %s\n", exec_once[i]);
+    for (int i = 0; i < exec_count; i++) {
+        if (!exec[i] || !*exec[i]) continue;
+        char *line = axctl_sprintf("exec = %s\n", exec[i]);
         axctl_str_append(&out, line); free(line);
     }
     return out;
 }
 
-/* ── Lua syntax generators ──────────────────────────────────────────── */
+/* ── Lua syntax generators (matching Go's generator_lua.go) ─────────── */
+
+/* Helper: convert dispatcher + argument to Lua action string.
+ * Matches Go's dispatcherToLua() function. */
+static char *dispatcher_to_lua(const char *dispatcher, const char *arg) {
+    if (!dispatcher || !*dispatcher) dispatcher = "exec";
+
+    if (strcmp(dispatcher, "killactive") == 0)
+        return axctl_strdup("hl.dsp.window.close()");
+    if (strcmp(dispatcher, "exit") == 0)
+        return axctl_strdup("hl.dsp.exit()");
+    if (strcmp(dispatcher, "togglefloating") == 0)
+        return axctl_strdup("hl.dsp.window.float({ action = \"toggle\" })");
+    if (strcmp(dispatcher, "fullscreen") == 0) {
+        if (arg && strcmp(arg, "1") == 0)
+            return axctl_strdup("hl.dsp.window.fullscreen({ action = \"set\" })");
+        if (arg && strcmp(arg, "0") == 0)
+            return axctl_strdup("hl.dsp.window.fullscreen({ action = \"unset\" })");
+        return axctl_strdup("hl.dsp.window.fullscreen()");
+    }
+    if (strcmp(dispatcher, "movefocus") == 0) {
+        return axctl_sprintf(
+            "function() if hl.get_active_workspace().tiled_layout == \"scrolling\" "
+            "then hl.dispatch(hl.dsp.layout(\"%s\")) "
+            "else hl.dispatch(hl.dsp.focus({ direction = \"%s\" })) end end",
+            arg ? axctl_sprintf("focus %s", arg) : "", arg ? arg : "");
+    }
+    if (strcmp(dispatcher, "movewindow") == 0) {
+        if (!arg || !*arg)
+            return axctl_strdup("hl.dsp.window.drag()");
+        return axctl_sprintf("hl.dsp.window.move({ direction = \"%s\" })", arg);
+    }
+    if (strcmp(dispatcher, "resizewindow") == 0) {
+        if (!arg || !*arg)
+            return axctl_strdup("hl.dsp.window.resize()");
+        return axctl_sprintf("hl.dsp.window.resize({ %s })", arg);
+    }
+    if (strcmp(dispatcher, "movetoworkspace") == 0)
+        return axctl_sprintf("hl.dsp.window.move({ workspace = \"%s\" })", arg ? arg : "");
+    if (strcmp(dispatcher, "movetoworkspacesilent") == 0)
+        return axctl_sprintf("hl.dsp.window.move({ workspace = \"%s\" })", arg ? arg : "");
+    if (strcmp(dispatcher, "workspace") == 0)
+        return axctl_sprintf("hl.dsp.focus({ workspace = \"%s\" })", arg ? arg : "");
+    if (strcmp(dispatcher, "togglespecialworkspace") == 0)
+        return axctl_sprintf("hl.dsp.workspace.toggle_special(\"%s\")", arg ? arg : "");
+    if (strcmp(dispatcher, "pin") == 0)
+        return axctl_strdup("hl.dsp.window.pin({ action = \"toggle\" })");
+    if (strcmp(dispatcher, "togglegroup") == 0)
+        return axctl_strdup("hl.dsp.group.toggle()");
+    if (strcmp(dispatcher, "changegroupactive") == 0) {
+        const char *dir = "next";
+        if (arg && (strcmp(arg, "b") == 0 || strcmp(arg, "prev") == 0))
+            dir = "prev";
+        return axctl_sprintf("hl.dsp.group.%s()", dir);
+    }
+    if (strcmp(dispatcher, "focuswindow") == 0)
+        return axctl_sprintf("hl.dsp.focus({ window = \"%s\" })", arg ? arg : "");
+    if (strcmp(dispatcher, "closewindow") == 0)
+        return axctl_sprintf("hl.dsp.window.close(\"%s\")", arg ? arg : "");
+    if (strcmp(dispatcher, "dpms") == 0)
+        return axctl_sprintf("hl.dsp.dpms({ action = \"%s\" })", arg ? arg : "");
+    if (strcmp(dispatcher, "layoutmsg") == 0) {
+        /* Check for scrolling layout messages */
+        if (arg && (strncmp(arg, "focus ", 6) == 0 ||
+                    strncmp(arg, "movewindowto ", 13) == 0 ||
+                    strncmp(arg, "colresize", 9) == 0 ||
+                    strncmp(arg, "promote", 7) == 0 ||
+                    strncmp(arg, "togglefit", 9) == 0 ||
+                    strncmp(arg, "swapcol ", 8) == 0 ||
+                    strncmp(arg, "movecoltoworkspace", 18) == 0)) {
+            return axctl_sprintf(
+                "function() if hl.get_active_workspace().tiled_layout == \"scrolling\" "
+                "then hl.dispatch(hl.dsp.layout(\"%s\")) end end", arg);
+        }
+        /* Check for dwindle layout messages */
+        if (arg && (strcmp(arg, "rotatesplit") == 0 || strcmp(arg, "togglesplit") == 0)) {
+            return axctl_sprintf(
+                "function() if hl.get_active_workspace().tiled_layout == \"dwindle\" "
+                "then hl.dispatch(hl.dsp.layout(\"%s\")) end end", arg);
+        }
+        return axctl_sprintf("hl.dsp.layout(\"%s\")", arg ? arg : "");
+    }
+    if (strcmp(dispatcher, "resizewindowpixel") == 0)
+        return axctl_sprintf("hl.dsp.window.resize({ %s })", arg ? arg : "");
+    if (strcmp(dispatcher, "movewindowpixel") == 0)
+        return axctl_sprintf("hl.dsp.window.move({ %s })", arg ? arg : "");
+    if (strcmp(dispatcher, "pseudo") == 0)
+        return axctl_strdup("hl.dsp.window.pseudo()");
+    if (strcmp(dispatcher, "centerwindow") == 0)
+        return axctl_strdup("hl.dsp.window.center()");
+
+    /* Default: exec */
+    if (arg && *arg)
+        return axctl_sprintf("hl.dsp.exec_cmd(\"%s %s\")", dispatcher, arg);
+    return axctl_sprintf("hl.dsp.exec_cmd(\"%s\")", dispatcher);
+}
+
+/* Helper: convert bind flags string to Lua table fields.
+ * Matches Go's bindFlagsToLua(). */
+static char *bind_flags_to_lua(const char *flags) {
+    if (!flags || !*flags) return axctl_strdup("");
+    char *result = axctl_strdup("");
+    bool first = true;
+    for (int i = 0; flags[i]; i++) {
+        const char *field = NULL;
+        switch (tolower(flags[i])) {
+            case 'l': field = "locked = true"; break;
+            case 'e': field = "release = true"; break;
+            case 'n': field = "non_consuming = true"; break;
+            case 'm': field = "mouse = true"; break;
+            case 'r': field = "repeating = true"; break;
+        }
+        if (field) {
+            if (!first) axctl_str_append(&result, ", ");
+            axctl_str_append(&result, field);
+            first = false;
+        }
+    }
+    return result;
+}
+
+/* Helper: escape a string for Lua (simple double-quote escaping) */
+static char *lua_quote(const char *s) {
+    if (!s) return axctl_strdup("\"\"");
+    /* Simple quoting: wrap in quotes, escape backslashes and quotes */
+    size_t len = strlen(s);
+    char *buf = malloc(len * 2 + 3);
+    if (!buf) return axctl_strdup("\"\"");
+    char *p = buf;
+    *p++ = '"';
+    for (size_t i = 0; i < len; i++) {
+        if (s[i] == '"' || s[i] == '\\') *p++ = '\\';
+        *p++ = s[i];
+    }
+    *p++ = '"';
+    *p = '\0';
+    return buf;
+}
 
 char *hyprland_generate_appearance_lua(const axctl_appearance_t *cfg)
 {
     if (!cfg) return axctl_strdup("");
     char *out = axctl_strdup("-- Appearance (generated by axctl)\n");
 
-    if (cfg->gaps) {
-        if (cfg->gaps->inner)
-            axctl_str_append(&out, axctl_sprintf("hl.general.gaps_in = %d\n", cfg->gaps->inner->value));
-        if (cfg->gaps->outer)
-            axctl_str_append(&out, axctl_sprintf("hl.general.gaps_out = %d\n", cfg->gaps->outer->value));
-    }
+    bool needs_general = (cfg->gaps != NULL) || (cfg->border != NULL) ||
+                         (cfg->layout != NULL && *cfg->layout != '\0');
+    bool needs_decoration = (cfg->border != NULL && cfg->border->rounding != NULL) ||
+                            (cfg->opacity != NULL) || (cfg->shadow != NULL) || (cfg->blur != NULL);
 
-    if (cfg->border) {
-        if (cfg->border->width)
-            axctl_str_append(&out, axctl_sprintf("hl.general.border_size = %d\n", cfg->border->width->value));
-        if (cfg->border->active_color) {
-            char *c = axctl_hyprland_color(cfg->border->active_color);
-            char *line = axctl_sprintf("hl.general[\"col.active_border\"] = \"%s\"\n", c);
-            axctl_str_append(&out, line);
-            free(line); free(c);
+    if (needs_general) {
+        axctl_str_append(&out, "hl.config({\n");
+        axctl_str_append(&out, "    general = {\n");
+        if (cfg->gaps) {
+            if (cfg->gaps->inner)
+                append_free(&out, axctl_sprintf("        gaps_in = %d,\n", cfg->gaps->inner->value));
+            if (cfg->gaps->outer)
+                append_free(&out, axctl_sprintf("        gaps_out = %d,\n", cfg->gaps->outer->value));
         }
-        if (cfg->border->inactive_color) {
-            char *c = axctl_hyprland_color(cfg->border->inactive_color);
-            char *line = axctl_sprintf("hl.general[\"col.inactive_border\"] = \"%s\"\n", c);
-            axctl_str_append(&out, line);
-            free(line); free(c);
+        if (cfg->border) {
+            if (cfg->border->width)
+                append_free(&out, axctl_sprintf("        border_size = %d,\n", cfg->border->width->value));
+            if (cfg->border->active_color || cfg->border->inactive_color) {
+                axctl_str_append(&out, "        col = {\n");
+                if (cfg->border->active_color) {
+                    char *c = axctl_hyprland_color(cfg->border->active_color);
+                    append_free(&out, axctl_sprintf("            active_border = \"%s\",\n", c));
+                    free(c);
+                }
+                if (cfg->border->inactive_color) {
+                    char *c = axctl_hyprland_color(cfg->border->inactive_color);
+                    append_free(&out, axctl_sprintf("            inactive_border = \"%s\",\n", c));
+                    free(c);
+                }
+                axctl_str_append(&out, "        },\n");
+            }
         }
-        if (cfg->border->rounding)
-            axctl_str_append(&out, axctl_sprintf("hl.decoration.rounding = %d\n", cfg->border->rounding->value));
+        if (cfg->layout && *cfg->layout)
+            append_free(&out, axctl_sprintf("        layout = \"%s\",\n", cfg->layout));
+        axctl_str_append(&out, "    },\n");
     }
 
-    if (cfg->blur) {
-        if (cfg->blur->enabled)
-            axctl_str_append(&out, axctl_sprintf("hl.decoration.blur.enabled = %s\n",
-                cfg->blur->enabled->value ? "true" : "false"));
-        if (cfg->blur->size)
-            axctl_str_append(&out, axctl_sprintf("hl.decoration.blur.size = %d\n", cfg->blur->size->value));
-        if (cfg->blur->passes)
-            axctl_str_append(&out, axctl_sprintf("hl.decoration.blur.passes = %d\n", cfg->blur->passes->value));
+    if (needs_decoration) {
+        if (!needs_general)
+            axctl_str_append(&out, "hl.config({\n");
+        axctl_str_append(&out, "    decoration = {\n");
+        if (cfg->border && cfg->border->rounding)
+            append_free(&out, axctl_sprintf("        rounding = %d,\n", cfg->border->rounding->value));
+        if (cfg->opacity) {
+            if (cfg->opacity->active)
+                append_free(&out, axctl_sprintf("        active_opacity = %.2f,\n", cfg->opacity->active->value));
+            if (cfg->opacity->inactive)
+                append_free(&out, axctl_sprintf("        inactive_opacity = %.2f,\n", cfg->opacity->inactive->value));
+        }
+        if (cfg->shadow && cfg->shadow->enabled) {
+            axctl_str_append(&out, "        shadow = {\n");
+            append_free(&out, axctl_sprintf("            enabled = %s,\n",
+                cfg->shadow->enabled->value ? "true" : "false"));
+            if (cfg->shadow->size)
+                append_free(&out, axctl_sprintf("            range = %d,\n", cfg->shadow->size->value));
+            if (cfg->shadow->color) {
+                char *c = axctl_hyprland_color(cfg->shadow->color);
+                append_free(&out, axctl_sprintf("            color = \"%s\",\n", c));
+                free(c);
+            }
+            axctl_str_append(&out, "        },\n");
+        }
+        if (cfg->blur) {
+            axctl_str_append(&out, "        blur = {\n");
+            if (cfg->blur->enabled)
+                append_free(&out, axctl_sprintf("            enabled = %s,\n",
+                    cfg->blur->enabled->value ? "true" : "false"));
+            if (cfg->blur->size)
+                append_free(&out, axctl_sprintf("            size = %d,\n", cfg->blur->size->value));
+            if (cfg->blur->passes)
+                append_free(&out, axctl_sprintf("            passes = %d,\n", cfg->blur->passes->value));
+            axctl_str_append(&out, "        },\n");
+        }
+        axctl_str_append(&out, "    },\n");
     }
 
-    if (cfg->animations && cfg->animations->enabled)
-        axctl_str_append(&out, axctl_sprintf("hl.animations.enabled = %s\n",
+    if (needs_general || needs_decoration)
+        axctl_str_append(&out, "})\n\n");
+
+    if (cfg->animations && cfg->animations->enabled) {
+        append_free(&out, axctl_sprintf("hl.config({\n    animations = { enabled = %s },\n})\n\n",
             cfg->animations->enabled->value ? "true" : "false"));
 
-    if (cfg->layout)
-        axctl_str_append(&out, axctl_sprintf("hl.general.layout = \"%s\"\n", cfg->layout));
+        if (cfg->animations->enabled->value) {
+            axctl_str_append(&out, "hl.curve(\"myBezier\", { type = \"bezier\", points = { {0.4, 0.0}, {0.2, 1.0} } })\n\n");
+            axctl_str_append(&out, "hl.animation({ leaf = \"windows\", enabled = true, speed = 2.5, bezier = \"myBezier\", style = \"popin 80%\" })\n");
+            axctl_str_append(&out, "hl.animation({ leaf = \"border\", enabled = true, speed = 2.5, bezier = \"myBezier\" })\n");
+            axctl_str_append(&out, "hl.animation({ leaf = \"fade\", enabled = true, speed = 2.5, bezier = \"myBezier\" })\n");
+            axctl_str_append(&out, "hl.animation({ leaf = \"workspaces\", enabled = true, speed = 2.5, bezier = \"myBezier\", style = \"slidefade 20%\" })\n");
+        }
+    }
 
     return out;
 }
@@ -274,20 +489,44 @@ char *hyprland_generate_keybinds_lua(const axctl_keybind_t *binds, int count)
         const axctl_keybind_t *kb = &binds[i];
         if (!kb->enabled || !kb->key || !*kb->key) continue;
 
-        char *mods = axctl_strdup("");
+        /* Build key string: "MOD1 + MOD2 + KEY" */
+        char *key_str = axctl_strdup("");
         for (int j = 0; j < kb->modifier_count; j++) {
-            if (j > 0) axctl_str_append(&mods, " ");
-            axctl_str_append(&mods, kb->modifiers[j]);
+            if (j > 0) axctl_str_append(&key_str, " + ");
+            axctl_str_append(&key_str, kb->modifiers[j]);
         }
+        if (kb->modifier_count > 0) axctl_str_append(&key_str, " + ");
+        axctl_str_append(&key_str, kb->key);
 
-        char *line = axctl_sprintf("hl.bind(\"%s\", \"%s\", \"%s\", \"%s\")\n",
-            *mods ? mods : "",
-            kb->key,
-            kb->dispatcher ? kb->dispatcher : "exec",
-            kb->argument ? kb->argument : "");
-        axctl_str_append(&out, line);
-        free(line);
-        free(mods);
+        char *quoted_key = lua_quote(key_str);
+        free(key_str);
+
+        bool is_mouse = (strncasecmp(kb->key, "mouse:", 6) == 0);
+        const char *dispatcher = kb->dispatcher;
+        const char *arg = kb->argument;
+
+        if (!dispatcher || !*dispatcher || strcmp(dispatcher, "exec") == 0) {
+            /* exec dispatcher */
+            char *quoted_arg = lua_quote(arg ? arg : "");
+            append_free(&out, axctl_sprintf("hl.bind(%s, hl.dsp.exec_cmd(%s))\n", quoted_key, quoted_arg));
+            free(quoted_arg);
+        } else {
+            /* Convert dispatcher to Lua action */
+            char *action = dispatcher_to_lua(dispatcher, arg);
+            if (is_mouse) {
+                append_free(&out, axctl_sprintf("hl.bind(%s, %s, { mouse = true })\n", quoted_key, action));
+            } else {
+                char *flags_lua = bind_flags_to_lua(kb->flags);
+                if (flags_lua && *flags_lua) {
+                    append_free(&out, axctl_sprintf("hl.bind(%s, %s, { %s })\n", quoted_key, action, flags_lua));
+                } else {
+                    append_free(&out, axctl_sprintf("hl.bind(%s, %s)\n", quoted_key, action));
+                }
+                free(flags_lua);
+            }
+            free(action);
+        }
+        free(quoted_key);
     }
 
     return out;
@@ -300,11 +539,53 @@ char *hyprland_generate_window_rules_lua(const axctl_window_rule_t *rules, int c
 
     for (int i = 0; i < count; i++) {
         const axctl_window_rule_t *r = &rules[i];
-        if (r->match && r->rule) {
-            char *line = axctl_sprintf("hl.windowrulev2(\"%s\", \"%s\")\n", r->rule, r->match);
-            axctl_str_append(&out, line);
-            free(line);
+        if (!r->match && !r->name) continue;
+
+        axctl_str_append(&out, "hl.window_rule({\n");
+        if (r->name) {
+            char *q = lua_quote(r->name);
+            append_free(&out, axctl_sprintf("    name = %s,\n", q));
+            free(q);
         }
+        if (r->match) {
+            char *q = lua_quote(r->match);
+            append_free(&out, axctl_sprintf("    match = { class = %s },\n", q));
+            free(q);
+        }
+        if (r->is_float && r->is_float->value)
+            axctl_str_append(&out, "    float = true,\n");
+        if (r->no_blur && r->no_blur->value)
+            axctl_str_append(&out, "    no_blur = true,\n");
+        if (r->no_shadow && r->no_shadow->value)
+            axctl_str_append(&out, "    no_shadow = true,\n");
+        if (r->rounding)
+            append_free(&out, axctl_sprintf("    rounding = %d,\n", r->rounding->value));
+        if (r->border_size)
+            append_free(&out, axctl_sprintf("    border_size = %d,\n", r->border_size->value));
+        if (r->pin && r->pin->value)
+            axctl_str_append(&out, "    pin = true,\n");
+        if (r->fullscreen && r->fullscreen->value)
+            axctl_str_append(&out, "    fullscreen = true,\n");
+        if (r->idle_inhibit && r->idle_inhibit->value)
+            axctl_str_append(&out, "    idle_inhibit = \"always\",\n");
+        if (r->no_screen_share && r->no_screen_share->value)
+            axctl_str_append(&out, "    no_screen_share = true,\n");
+        if (r->move && *r->move) {
+            char *q = lua_quote(r->move);
+            append_free(&out, axctl_sprintf("    move = %s,\n", q));
+            free(q);
+        }
+        if (r->size && *r->size) {
+            char *q = lua_quote(r->size);
+            append_free(&out, axctl_sprintf("    size = %s,\n", q));
+            free(q);
+        }
+        if (r->rule && *r->rule) {
+            char *q = lua_quote(r->rule);
+            append_free(&out, axctl_sprintf("    -- legacy rule: %s\n", q));
+            free(q);
+        }
+        axctl_str_append(&out, "})\n\n");
     }
     return out;
 }
@@ -317,10 +598,28 @@ char *hyprland_generate_layer_rules_lua(const axctl_layer_rule_t *rules, int cou
     for (int i = 0; i < count; i++) {
         const axctl_layer_rule_t *r = &rules[i];
         if (!r->namespace_str) continue;
-        if (r->blur && r->blur->value) {
-            char *line = axctl_sprintf("hl.layerrule(\"blur\", \"%s\")\n", r->namespace_str);
-            axctl_str_append(&out, line); free(line);
+
+        axctl_str_append(&out, "hl.layer_rule({\n");
+        if (r->no_anim && r->no_anim->value)
+            axctl_str_append(&out, "    no_anim = true,\n");
+        if (r->blur && r->blur->value)
+            axctl_str_append(&out, "    blur = true,\n");
+        if (r->blur_popups && r->blur_popups->value)
+            axctl_str_append(&out, "    blur_popups = true,\n");
+        if (r->ignore_alpha_value) {
+            append_free(&out, axctl_sprintf("    ignore_alpha = %.2f,\n", r->ignore_alpha_value->value));
+        } else if (r->ignore_alpha && r->ignore_alpha->value) {
+            axctl_str_append(&out, "    ignore_alpha = 0,\n");
         }
+        if (r->ignore_zero_alpha && r->ignore_zero_alpha->value)
+            axctl_str_append(&out, "    ignore_zero = true,\n");
+        if (r->no_shadow && r->no_shadow->value)
+            axctl_str_append(&out, "    no_shadow = true,\n");
+
+        char *q = lua_quote(r->namespace_str);
+        append_free(&out, axctl_sprintf("    match = { namespace = %s },\n", q));
+        free(q);
+        axctl_str_append(&out, "})\n\n");
     }
     return out;
 }
@@ -328,14 +627,29 @@ char *hyprland_generate_layer_rules_lua(const axctl_layer_rule_t *rules, int cou
 char *hyprland_generate_startup_lua(char **exec, int exec_count,
                                     char **exec_once, int exec_once_count)
 {
+    if (exec_count <= 0 && exec_once_count <= 0)
+        return axctl_strdup("");
+
     char *out = axctl_strdup("-- Startup (generated by axctl)\n");
-    for (int i = 0; i < exec_count; i++) {
-        char *line = axctl_sprintf("hl.exec(\"%s\")\n", exec[i]);
-        axctl_str_append(&out, line); free(line);
+
+    /* exec_once -> hl.on("hyprland.start", function() ... end) */
+    if (exec_once_count > 0) {
+        axctl_str_append(&out, "hl.on(\"hyprland.start\", function()\n");
+        for (int i = 0; i < exec_once_count; i++) {
+            if (!exec_once[i] || !*exec_once[i]) continue;
+            char *q = lua_quote(exec_once[i]);
+            append_free(&out, axctl_sprintf("    hl.exec_cmd(%s)\n", q));
+            free(q);
+        }
+        axctl_str_append(&out, "end)\n\n");
     }
-    for (int i = 0; i < exec_once_count; i++) {
-        char *line = axctl_sprintf("hl.exec_once(\"%s\")\n", exec_once[i]);
-        axctl_str_append(&out, line); free(line);
+
+    /* exec -> hl.exec_cmd() */
+    for (int i = 0; i < exec_count; i++) {
+        if (!exec[i] || !*exec[i]) continue;
+        char *q = lua_quote(exec[i]);
+        append_free(&out, axctl_sprintf("hl.exec_cmd(%s)\n", q));
+        free(q);
     }
     return out;
 }
