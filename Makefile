@@ -45,7 +45,7 @@ OBJDIR := build
 OBJS   := $(patsubst src/%.c,$(OBJDIR)/%.o,$(SRCS))
 TARGET := axctl
 
-.PHONY: all clean install
+.PHONY: all clean install test
 
 all: $(TARGET)
 
@@ -56,6 +56,22 @@ $(TARGET): $(OBJS)
 $(OBJDIR)/%.o: src/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+TEST_SRCS := test/test_axctl.c
+TEST_OBJS := \
+    src/utils/strutil.o \
+    src/utils/json_helpers.o \
+    src/ipc/types.o \
+    src/ipc/errors.o \
+    src/ipc/cache.o
+
+$(OBJDIR)/test_axctl: $(TEST_SRCS) $(TEST_OBJS)
+	@mkdir -p $(OBJDIR)
+	$(CC) -o $@ $(TEST_SRCS) $(TEST_OBJS) $(LDFLAGS) -Iinclude
+
+test: $(OBJDIR)/test_axctl
+	@echo "Running tests..."
+	@./$(OBJDIR)/test_axctl
 
 clean:
 	rm -rf $(OBJDIR) $(TARGET)

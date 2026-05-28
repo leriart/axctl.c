@@ -1,6 +1,8 @@
 # Build artifacts
 axctl
 build/
+*.o
+test/test_axctl
 
 # IDE / editor
 *.swp
