@@ -976,29 +976,40 @@ static json_object *dispatch_method(axctl_server_t *s, const char *method,
         }
         pthread_mutex_unlock(&s->clients_mu);
 
-        /* Send initial state dump */
-        json_object *notif = json_object_new_object();
-        json_object_object_add(notif, "jsonrpc", json_object_new_string("2.0"));
-        json_object_object_add(notif, "method", json_object_new_string("State.Dump"));
+        /* Build state dump once, use in both messages */
         json_object *initial_state = build_state_dump(s);
-        json_object_object_add(notif, "state", initial_state);
-        const char *data = json_object_to_json_string_ext(notif,
-                                                           JSON_C_TO_STRING_PLAIN);
-        size_t dlen = strlen(data);
-        debug_log("SUBSCRIBE: initial state dump %zu bytes", dlen);
-        /* Log first 500 chars of the dump for inspection */
-        if (dlen > 500) {
-            char preview[501];
-            memcpy(preview, data, 500);
-            preview[500] = '\0';
-            debug_log("SUBSCRIBE: dump preview: %.500s...", preview);
-        } else {
-            debug_log("SUBSCRIBE: dump: %s", data);
-        }
-        write(client_fd, data, dlen);
-        write(client_fd, "\n", 1);
-        json_object_put(notif);
 
+        /* 1. State.Dump notification (backward compat) */
+        {
+            json_object *notif = json_object_new_object();
+            json_object_object_add(notif, "jsonrpc", json_object_new_string("2.0"));
+            json_object_object_add(notif, "method", json_object_new_string("State.Dump"));
+            json_object_object_add(notif, "state", json_object_get(initial_state));
+            const char *data = json_object_to_json_string_ext(notif,
+                                                               JSON_C_TO_STRING_PLAIN);
+            debug_log("SUBSCRIBE: initial state dump %zu bytes", strlen(data));
+            write(client_fd, data, strlen(data));
+            write(client_fd, "\n", 1);
+            json_object_put(notif);
+        }
+
+        /* 2. Subscribe response with state at top level.
+         * The QML checks parsedJson.state — this ensures the state
+         * is available even if the notification arrives mid-parse. */
+        {
+            json_object *resp = json_object_new_object();
+            json_object_object_add(resp, "jsonrpc", json_object_new_string("2.0"));
+            json_object_object_add(resp, "result", json_object_new_string("subscribed"));
+            json_object_object_add(resp, "state", initial_state);
+            const char *data = json_object_to_json_string_ext(resp,
+                                                               JSON_C_TO_STRING_PLAIN);
+            write(client_fd, data, strlen(data));
+            write(client_fd, "\n", 1);
+            json_object_put(resp);
+        }
+
+        /* Return a string result so the generic handler sends
+         * {"id":1,"result":"subscribed"} too — redundant but harmless */
         result = json_object_new_string("subscribed");
     }
     else {
