@@ -50,7 +50,7 @@ char *axctl_config_default_output_path(void)
 {
     const char *home = getenv("HOME");
     if (!home) home = "/root";
-    return axctl_sprintf("%s/.local/share/axctl/generated.conf", home);
+    return axctl_sprintf("%s/.local/share/ambxst/hyprland.conf", home);
 }
 
 /* Ensure directory exists for a file path */

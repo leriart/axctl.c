@@ -185,7 +185,35 @@ int axctl_config_universal_from_json(const char *json_str, axctl_config_universa
     struct json_object *app_obj = json_get_object(root, "appearance");
     if (app_obj) parse_appearance(app_obj, &out->appearance);
 
-    /* TODO: parse keybinds, window_rules, layer_rules, exec, exec_once from JSON */
+
+    /* Parse keybinds from JSON */
+    struct json_object *kb_obj = json_get_object(root, "keybinds");
+    if (kb_obj) {
+        struct json_object *kb_custom = json_get_array(kb_obj, "custom");
+        if (kb_custom) {
+            int count = json_object_array_length(kb_custom);
+            if (count > 0) {
+                out->custom_keybinds = calloc(count, sizeof(axctl_keybind_t));
+                for (int i = 0; i < count; i++) {
+                    struct json_object *kb = json_object_array_get_idx(kb_custom, i);
+                    axctl_keybind_t *k = &out->custom_keybinds[out->custom_keybind_count++];
+                    k->key = axctl_strdup(json_get_string(kb, "key"));
+                    k->dispatcher = axctl_strdup(json_get_string(kb, "dispatcher"));
+                    k->argument = axctl_strdup(json_get_string(kb, "argument"));
+                    k->flags = axctl_strdup(json_get_string(kb, "flags"));
+                    k->enabled = json_get_bool(kb, "enabled", true);
+                    struct json_object *mods = json_get_array(kb, "modifiers");
+                    if (mods) {
+                        int mlen = json_object_array_length(mods);
+                        k->modifiers = calloc(mlen + 1, sizeof(char *));
+                            k->modifier_count = mlen;
+                        for (int j = 0; j < mlen; j++)
+                            k->modifiers[j] = axctl_strdup(json_object_get_string(json_object_array_get_idx(mods, j)));
+                    }
+                }
+            }
+        }
+    }
 
     json_object_put(root);
     return AXCTL_OK;
