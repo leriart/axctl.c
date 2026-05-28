@@ -152,4 +152,6 @@ axctl system exit                     # Exit the compositor
 
 ## License
 
-Same as the original axctl project.
+- axctl.c is released under the GNU Affero General Public License v3.0 (AGPLv3).
+- axctl and the axctl logo are trademarks of Leriart.
+- See [LICENSE](./LICENSE) and [TRADEMARK.md](./assets/TRADEMARK.md) for details.
