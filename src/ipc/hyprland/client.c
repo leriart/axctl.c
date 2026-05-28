@@ -700,6 +700,36 @@ static int hypr_batch_keybinds(void *priv, const char *json_payload) {
 
     char *batch = axctl_strdup("[[BATCH]]");
 
+    /* IMPORTANT: Process unbinds BEFORE binds (matching Go version).
+     * NothingLess sends the same keys in both binds and unbinds arrays
+     * (unbind old, then bind new). If binds are processed first and
+     * unbinds second, the bind is immediately cancelled by the unbind. */
+
+    struct json_object *unbinds = json_get_array(root, "unbinds");
+    if (unbinds) {
+        int len = json_object_array_length(unbinds);
+        for (int i = 0; i < len; i++) {
+            struct json_object *u = json_object_array_get_idx(unbinds, i);
+            const char *key = json_get_string(u, "key");
+            struct json_object *mods_arr = json_get_array(u, "modifiers");
+
+            char *mods_str = axctl_strdup("");
+            if (mods_arr) {
+                int mlen = json_object_array_length(mods_arr);
+                for (int j = 0; j < mlen; j++) {
+                    if (j > 0) axctl_str_append(&mods_str, " ");
+                    axctl_str_append(&mods_str,
+                        json_object_get_string(json_object_array_get_idx(mods_arr, j)));
+                }
+            }
+
+            /* Hyprland dispatch uses keyword unbind, not 'unbind =' */
+            char *part = axctl_sprintf(";keyword unbind %s, %s", mods_str, key);
+            axctl_str_append(&batch, part);
+            free(part); free(mods_str);
+        }
+    }
+
     struct json_object *binds = json_get_array(root, "binds");
     if (binds) {
         int len = json_object_array_length(binds);
@@ -742,31 +772,6 @@ static int hypr_batch_keybinds(void *priv, const char *json_payload) {
             axctl_str_append(&batch, part);
             free(part);
             free(mods_str);
-        }
-    }
-
-    struct json_object *unbinds = json_get_array(root, "unbinds");
-    if (unbinds) {
-        int len = json_object_array_length(unbinds);
-        for (int i = 0; i < len; i++) {
-            struct json_object *u = json_object_array_get_idx(unbinds, i);
-            const char *key = json_get_string(u, "key");
-            struct json_object *mods_arr = json_get_array(u, "modifiers");
-
-            char *mods_str = axctl_strdup("");
-            if (mods_arr) {
-                int mlen = json_object_array_length(mods_arr);
-                for (int j = 0; j < mlen; j++) {
-                    if (j > 0) axctl_str_append(&mods_str, " ");
-                    axctl_str_append(&mods_str,
-                        json_object_get_string(json_object_array_get_idx(mods_arr, j)));
-                }
-            }
-
-            /* Hyprland dispatch uses keyword unbind, not 'unbind =' */
-            char *part = axctl_sprintf(";keyword unbind %s, %s", mods_str, key);
-            axctl_str_append(&batch, part);
-            free(part); free(mods_str);
         }
     }
 
