@@ -980,9 +980,31 @@ static int hypr_batch_keybinds(void *priv, const char *json_payload) {
                 }
             }
 
-            /* Go: bindKeyword = "bind" + flags (e.g. "bindm", "bindl") */
+            /* Go: bindKeyword = "bind" + flags (e.g. "bindm", "bindl")
+             * Strip 'r' (repeat) flag from modifier key binds (Super_L,
+             * Super_R, Alt_L, Alt_R, Ctrl_L, Ctrl_R, Shift_L, Shift_R)
+             * to prevent the bind from firing 10+ times per press due
+             * to the key repeat rate of modifier keys. */
+            static const char *mod_keys[] = {
+                "Super_L", "Super_R", "Alt_L", "Alt_R",
+                "Ctrl_L", "Ctrl_R", "Shift_L", "Shift_R", NULL
+            };
+            int is_mod = 0;
+            if (key) {
+                for (int mk = 0; mod_keys[mk]; mk++) {
+                    if (strcmp(key, mod_keys[mk]) == 0) { is_mod = 1; break; }
+                }
+            }
             char *bind_kw;
-            if (flags && *flags) {
+            if (flags && *flags && is_mod && strchr(flags, 'r')) {
+                /* Copy flags without 'r' */
+                char clean[16];
+                int ci = 0;
+                for (int fi = 0; flags[fi] && ci < 15; fi++)
+                    if (flags[fi] != 'r') clean[ci++] = flags[fi];
+                clean[ci] = '\0';
+                bind_kw = clean[0] ? axctl_sprintf("bind%s", clean) : axctl_strdup("bind");
+            } else if (flags && *flags) {
                 bind_kw = axctl_sprintf("bind%s", flags);
             } else {
                 bind_kw = axctl_strdup("bind");
