@@ -724,17 +724,19 @@ static int hypr_batch_keybinds(void *priv, const char *json_payload) {
             char *part;
             const char *bind_kw = "bind";
             if (flags && *flags) {
-                bind_kw = flags; /* e.g. "m" -> bindm, "l" -> bindl, "r" -> bindr, etc. */
+                /* e.g. "m" -> bindm, "l" -> bindl, "r" -> bindr */
+                bind_kw = flags;
             }
 
+            /* Hyprland's [[BATCH]] dispatch uses keyword command format:
+             *   keyword bind MODS,KEY,DISPATCHER,ARG
+             * NOT config file format (no '=' sign).
+             * Go version does:  keyword bind SUPER,Q,closewindow  */
             if (argument && *argument) {
-                part = axctl_sprintf(";%s = %s, %s, %s, %s",
+                part = axctl_sprintf(";keyword %s %s, %s, %s, %s",
                     bind_kw, mods_str, key, dispatcher, argument);
             } else {
-                /* No argument: omit the trailing comma to match Hyprland's expectations.
-                 * For bindm (mouse binds) this means: ;bindm = mods, key, dispatcher
-                 * Go version does the same. */
-                part = axctl_sprintf(";%s = %s, %s, %s",
+                part = axctl_sprintf(";keyword %s %s, %s, %s",
                     bind_kw, mods_str, key, dispatcher);
             }
             axctl_str_append(&batch, part);
@@ -761,7 +763,8 @@ static int hypr_batch_keybinds(void *priv, const char *json_payload) {
                 }
             }
 
-            char *part = axctl_sprintf(";unbind = %s, %s", mods_str, key);
+            /* Hyprland dispatch uses keyword unbind, not 'unbind =' */
+            char *part = axctl_sprintf(";keyword unbind %s, %s", mods_str, key);
             axctl_str_append(&batch, part);
             free(part); free(mods_str);
         }
