@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>axctl.c Social Preview</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700;800&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    width: 1280px;
+    height: 640px;
+    overflow: hidden;
+    background: #080808;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .container {
+    width: 100%;
+    height: 100%;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* Grid background */
+  .grid {
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(209,63,48,0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(209,63,48,0.05) 1px, transparent 1px);
+    background-size: 36px 36px;
+  }
+
+  /* Glow circles */
+  .glow {
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(100px);
+    mix-blend-mode: screen;
+  }
+
+  .glow-1 {
+    width: 600px;
+    height: 600px;
+    background: radial-gradient(circle, rgba(209,63,48,0.20), transparent);
+    top: -200px;
+    right: -150px;
+  }
+
+  .glow-2 {
+    width: 350px;
+    height: 350px;
+    background: radial-gradient(circle, rgba(255,200,60,0.10), transparent);
+    bottom: -120px;
+    left: 50%;
+  }
+
+  .glow-3 {
+    width: 450px;
+    height: 450px;
+    background: radial-gradient(circle, rgba(209,63,48,0.08), transparent);
+    bottom: -100px;
+    left: -100px;
+  }
+
+  /* Accent lines */
+  .accent-top {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 3px;
+    background: linear-gradient(90deg,
+      transparent 0%,
+      rgba(209,63,48,0.6) 20%,
+      rgba(209,63,48,1) 50%,
+      rgba(209,63,48,0.6) 80%,
+      transparent 100%
+    );
+  }
+
+  .accent-left {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 4px;
+    height: 100%;
+    background: linear-gradient(180deg,
+      rgba(209,63,48,0) 0%,
+      rgba(209,63,48,0.6) 25%,
+      rgba(209,63,48,0.9) 50%,
+      rgba(209,63,48,0.6) 75%,
+      rgba(209,63,48,0) 100%
+    );
+  }
+
+  /* Content */
+  .content {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 70px;
+    padding: 0 90px;
+  }
+
+  /* Logo / title area */
+  .logo-area {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  /* ASCII-ish header */
+  .ascii-header {
+    font-size: 12px;
+    font-weight: 300;
+    color: rgba(209,63,48,0.5);
+    line-height: 1.5;
+    letter-spacing: 1px;
+    margin-bottom: 20px;
+  }
+
+  .logo-text {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 72px;
+    font-weight: 700;
+    letter-spacing: -1px;
+    line-height: 1;
+  }
+
+  .logo-text .ax {
+    color: #ffffff;
+  }
+
+  .logo-text .ctl {
+    color: #d13f30;
+    text-shadow: 0 0 50px rgba(209,63,48,0.5);
+  }
+
+  .logo-text .dotc {
+    color: #ffc83c;
+    text-shadow: 0 0 30px rgba(255,200,60,0.3);
+  }
+
+  .subtitle {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    font-weight: 300;
+    color: #666;
+    letter-spacing: 5px;
+    text-transform: uppercase;
+    margin-top: 20px;
+  }
+
+  .subtitle span {
+    color: #d13f30;
+  }
+
+  /* Divider */
+  .divider {
+    width: 1px;
+    height: 200px;
+    background: linear-gradient(180deg,
+      transparent,
+      rgba(255,255,255,0.08) 20%,
+      rgba(255,255,255,0.20) 50%,
+      rgba(255,255,255,0.08) 80%,
+      transparent
+    );
+  }
+
+  /* Info */
+  .info {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .info .tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    font-weight: 300;
+    color: #555;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+  }
+
+  .info .tag .dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: #ffc83c;
+  }
+
+  .info h2 {
+    font-size: 26px;
+    font-weight: 500;
+    color: #999;
+    line-height: 1.4;
+  }
+
+  .info h2 strong {
+    color: #ddd;
+    font-weight: 700;
+  }
+
+  .info .compositors {
+    display: flex;
+    gap: 10px;
+    margin-top: 6px;
+  }
+
+  .info .compositor {
+    padding: 3px 12px;
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 300;
+    color: #666;
+    letter-spacing: 1px;
+  }
+
+  .info .compositor:first-child {
+    border-color: rgba(209,63,48,0.4);
+    color: #d13f30;
+  }
+
+  .info .features {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+  }
+
+  .info .features .pill {
+    padding: 4px 14px;
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 100px;
+    font-size: 10px;
+    font-weight: 300;
+    color: #555;
+    letter-spacing: 1px;
+  }
+
+  .info .features .pill.accent {
+    border-color: rgba(209,63,48,0.25);
+    color: #d13f30;
+  }
+
+  .info .features .pill.gold {
+    border-color: rgba(255,200,60,0.25);
+    color: #ffc83c;
+  }
+
+  /* Bottom bar */
+  .bottom-bar {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 42px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 18px;
+    border-top: 1px solid rgba(255,255,255,0.03);
+    font-size: 10px;
+    color: #3a3a3a;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+
+  .bottom-bar .sep {
+    color: #2a2a2a;
+  }
+
+  /* Version badge */
+  .version {
+    position: absolute;
+    top: 22px;
+    right: 32px;
+    font-size: 11px;
+    font-weight: 300;
+    color: #3a3a3a;
+    letter-spacing: 2px;
+  }
+
+  .version span {
+    color: #ffc83c;
+  }
+
+  /* Code snippet decoration */
+  .code-deco {
+    position: absolute;
+    bottom: 80px;
+    right: 40px;
+    font-size: 10px;
+    font-weight: 300;
+    color: rgba(255,255,255,0.03);
+    line-height: 1.5;
+    letter-spacing: 1px;
+    text-align: right;
+  }
+
+  /* Speed indicator */
+  .perf {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 10px;
+    font-weight: 400;
+    color: #ffc83c;
+    letter-spacing: 1px;
+    margin-top: 8px;
+  }
+
+  .perf .bar {
+    width: 2px;
+    height: 16px;
+    background: #ffc83c;
+  }
+
+  .perf .bar:nth-child(2) { height: 14px; opacity: 0.8; }
+  .perf .bar:nth-child(3) { height: 10px; opacity: 0.5; }
+  .perf .bar:nth-child(4) { height: 6px;  opacity: 0.3; }
+  .perf .bar:nth-child(5) { height: 3px;  opacity: 0.1; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="grid"></div>
+  <div class="glow glow-1"></div>
+  <div class="glow glow-2"></div>
+  <div class="glow glow-3"></div>
+  <div class="accent-top"></div>
+  <div class="accent-left"></div>
+
+  <div class="version"><span>◆</span> C11 · JSON-RPC</div>
+
+  <div class="content">
+    <div class="logo-area">
+      <div class="logo-text">
+        <span class="ax">ax</span><span class="ctl">ctl</span><span class="dotc">.c</span>
+      </div>
+      <div class="subtitle">Universal <span>IPC</span> Daemon &amp; CLI</div>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="info">
+      <div class="tag"><span class="dot"></span> Wayland Compositor Bridge</div>
+      <h2>
+        <strong>Zero-overhead</strong> IPC daemon.<br>
+        C rewrite — fast, lean,<br>
+        <span style="color:#d13f30;">no runtime deps.</span>
+      </h2>
+
+      <div class="compositors">
+        <span class="compositor">Hyprland</span>
+        <span class="compositor">Niri</span>
+        <span class="compositor">Mango</span>
+      </div>
+
+      <div class="features">
+        <span class="pill accent">C11</span>
+        <span class="pill">JSON-RPC</span>
+        <span class="pill">Unix Sockets</span>
+        <span class="pill gold">TOML Config</span>
+        <span class="pill">Window Mgmt</span>
+        <span class="pill">Keybinds</span>
+        <span class="pill">Idle Mgmt</span>
+        <span class="pill">~300KB</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="code-deco">
+    typedef struct {<br>
+    &nbsp;&nbsp;char *name;<br>
+    &nbsp;&nbsp;void *priv;<br>
+    &nbsp;&nbsp;int (*bind)(void);<br>
+    &nbsp;&nbsp;int (*unbind)(void);<br>
+    } compositor_t;
+  </div>
+
+  <div class="bottom-bar">
+    <span>github.com/Leriart/axctl.c</span>
+    <span class="sep">|</span>
+    <span>C Port of axctl (Go)</span>
+    <span class="sep">|</span>
+    <span>MIT License</span>
+  </div>
+</div>
+</body>
+</html>
