@@ -1,5 +1,5 @@
 <p align="center">
-  <h1 align="center">axctl.c</h1>
+  <img src="assets/logo.png" alt="axctl.c" width="420">
   <p align="center">
     Universal IPC daemon and CLI for Wayland compositors.
     <br>
@@ -153,5 +153,4 @@ axctl system exit                     # Exit the compositor
 ## License
 
 - axctl.c is released under the GNU Affero General Public License v3.0 (AGPLv3).
-- axctl and the axctl logo are trademarks of Leriart.
-- See [LICENSE](./LICENSE) and [TRADEMARK.md](./assets/TRADEMARK.md) for details.
+- See [LICENSE](./LICENSE) for details.
