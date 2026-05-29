@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@700;300&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    background: transparent;
+    font-family: 'JetBrains Mono', monospace;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 800px;
+    height: 180px;
+    overflow: hidden;
+  }
+
+  .logo-area {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .logo-text {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 64px;
+    font-weight: 700;
+    letter-spacing: -1px;
+    line-height: 1;
+  }
+
+  /* Visible on both light and dark backgrounds */
+  .logo-text .ax {
+    color: #cccccc;
+  }
+
+  .logo-text .ctl {
+    color: #d13f30;
+  }
+
+  .logo-text .dotc {
+    color: #cc9800;
+  }
+
+  .subtitle {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    font-weight: 300;
+    color: #888;
+    letter-spacing: 5px;
+    text-transform: uppercase;
+  }
+
+  .subtitle span {
+    color: #c0392b;
+  }
+</style>
+</head>
+<body>
+<div class="logo-area">
+  <div class="logo-text">
+    <span class="ax">ax</span><span class="ctl">ctl</span><span class="dotc">.c</span>
+  </div>
+  <div class="subtitle">Universal <span>IPC</span> Daemon &amp; CLI</div>
+</div>
+</body>
+</html>

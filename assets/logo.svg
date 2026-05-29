@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="120" viewBox="0 0 600 120">
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@700&amp;display=swap');
+      .logo { font-family: 'JetBrains Mono', monospace; font-size: 64px; font-weight: 700; }
+      .sub { font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 300; letter-spacing: 5px; }
+    </style>
+  </defs>
+  <text x="300" y="60" text-anchor="middle" class="logo">
+    <tspan fill="#cccccc">ax</tspan><tspan fill="#d13f30">ctl</tspan><tspan fill="#cc9800">.c</tspan>
+  </text>
+  <text x="300" y="90" text-anchor="middle" class="sub">
+    <tspan fill="#888888">Universal </tspan><tspan fill="#c0392b">IPC</tspan><tspan fill="#888888"> Daemon &amp; CLI</tspan>
+  </text>
+</svg>
