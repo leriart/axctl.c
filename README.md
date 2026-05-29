@@ -17,7 +17,7 @@
 
 ## Why axctl.c?
 
-A line-by-line C port of [axctl](https://github.com/Axenide/axctl) (Go), rebuilt for **zero-overhead deployment** on embedded, low-resource, and NixOS systems.
+A line-by-line C port of [axctl](https://github.com/Axenide/axctl) (Go), rebuilt for **zero-overhead deployment** on embedded and low-resource systems.
 
 | | Go | axctl.c |
 |---|---|---|
